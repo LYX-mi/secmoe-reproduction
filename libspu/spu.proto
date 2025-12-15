@@ -331,6 +331,9 @@ message RuntimeConfig {
   uint64 experimental_inter_op_concurrency = 104;
   // Enable use of private type
   bool experimental_enable_colocated_optimization = 105;
+
+  // enable bmm protocol
+  bool experimental_enable_bmm = 110;
 }
 
 message TTPBeaverConfig {
