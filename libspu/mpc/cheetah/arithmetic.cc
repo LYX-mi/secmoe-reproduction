@@ -481,9 +481,12 @@ NdArrayRef BatchMatMulAV::proc(KernelEvalContext* ctx, const NdArrayRef& x,
   SPU_ENFORCE(x.ndim() == 3 && y.ndim() == 3);
   SPU_ENFORCE_EQ(x.shape()[0], y.shape()[0]);
   SPU_ENFORCE_EQ(x.shape()[2], y.shape()[1]);
+  SPU_ENFORCE(ctx->sctx()->config().experimental_enable_bmm(),
+              "cheetah bmm protocol is disabled");
 
   auto* comm = ctx->getState<Communicator>();
-  auto* dot_prot = ctx->getState<CheetahDotState>()->get();
+  auto* bmm_prot = ctx->getState<CheetahBatchMatMulState>()->get();
+  bmm_prot->LazyInitKeys(x.eltype().as<Ring2k>()->field());
   const int rank = comm->getRank();
   const auto* ptype = y.eltype().as<Priv2kTy>();
   SPU_ENFORCE(ptype != nullptr, "rhs should be a private type");
@@ -494,9 +497,9 @@ NdArrayRef BatchMatMulAV::proc(KernelEvalContext* ctx, const NdArrayRef& x,
 
   NdArrayRef out;
   if (rank != owner) {
-    out = dot_prot->BatchDotOLE(x, comm->lctx().get(), dim4, true);
+    out = bmm_prot->BatchDotOLE(x, comm->lctx().get(), dim4, true);
   } else {
-    out = dot_prot->BatchDotOLE(y, comm->lctx().get(), dim4, false);
+    out = bmm_prot->BatchDotOLE(y, comm->lctx().get(), dim4, false);
 
     const Strides strides(x.shape().size(), 1);
     Index lhs_slice_end(x.shape().begin(), x.shape().end());
