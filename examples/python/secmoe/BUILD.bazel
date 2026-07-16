@@ -28,3 +28,18 @@ py_binary(
         "//spu/utils:simulation",
     ],
 )
+
+py_binary(
+    name = "secure_moe_multicase",
+    srcs = [
+        "secure_moe_multicase.py",
+        "secure_moe_correctness.py",
+        "switch_moe_reference.py",
+    ],
+    main = "secure_moe_multicase.py",
+    deps = [
+        "//spu:api",
+        "//spu/intrinsic:all_intrinsics",
+        "//spu/utils:simulation",
+    ],
+)
