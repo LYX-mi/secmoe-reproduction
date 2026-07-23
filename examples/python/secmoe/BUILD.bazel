@@ -60,30 +60,32 @@ py_binary(
 )
 
 py_binary(
-    name = "secure_moe_rq2_multicase",
+    name = "secure_moe_protocol1_select_then_compute",
     srcs = [
-        "secure_moe_rq2_multicase.py",
-        "secure_moe_select_then_compute.py",
+        "secure_moe_protocol1_select_then_compute.py",
         "secure_moe_correctness.py",
         "switch_moe_reference.py",
     ],
-    main = "secure_moe_rq2_multicase.py",
+    main = "secure_moe_protocol1_select_then_compute.py",
     deps = [
         "//spu:api",
         "//spu/intrinsic:all_intrinsics",
+        "//spu/utils:frontend",
         "//spu/utils:simulation",
     ],
 )
 
+
 py_binary(
-    name = "secure_moe_rq2_benchmark",
+    name = "benchmark_protocol1_comparison",
     srcs = [
-        "secure_moe_rq2_benchmark.py",
-        "secure_moe_select_then_compute.py",
+        "benchmark_protocol1_comparison.py",
         "secure_moe_correctness.py",
+        "secure_moe_select_then_compute.py",
+        "secure_moe_protocol1_select_then_compute.py",
         "switch_moe_reference.py",
     ],
-    main = "secure_moe_rq2_benchmark.py",
+    main = "benchmark_protocol1_comparison.py",
     deps = [
         "//spu:api",
         "//spu/intrinsic:all_intrinsics",
