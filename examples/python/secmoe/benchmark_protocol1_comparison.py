@@ -3,16 +3,16 @@ import statistics
 import time
 from pathlib import Path
 
+import jax
+import jax.numpy as jnp
 import numpy as np
+from spu import intrinsic as si
 
 from examples.python.secmoe.secure_moe_correctness import (
-    secure_top1_moe,
-)
-from examples.python.secmoe.secure_moe_select_then_compute import (
-    secure_select_then_compute_moe,
+    secure_expert_forward,
+    secure_softmax,
 )
 from examples.python.secmoe.secure_moe_protocol1_select_then_compute import (
-    CLIENT_RANK,
     SERVER_RANK,
     RoleAwareSimulator,
     compile_protocol1_function,
@@ -21,63 +21,216 @@ from examples.python.secmoe.secure_moe_protocol1_select_then_compute import (
 )
 
 
-METHODS = {
-    "baseline_all_experts": secure_top1_moe,
-    "rq2_v1_select_then_compute": secure_select_then_compute_moe,
-    "rq2_v2_protocol1": protocol1_select_then_compute_moe,
-}
+def secure_top1_index(router_logits):
+    """Use the same secure Top-1 operator in every method."""
 
+    _, top_indices = jax.lax.top_k(
+        router_logits,
+        k=1,
+    )
 
-def max_absolute_error(actual, expected):
-    actual = np.asarray(actual)
-    expected = np.asarray(expected)
-
-    return float(
-        np.max(
-            np.abs(actual - expected)
-        )
+    return jnp.squeeze(
+        top_indices,
+        axis=-1,
     )
 
 
-def execute_once(
-    simulator,
-    executable,
-    flat_arguments,
-    owner_ranks,
+def baseline_all_experts_topk(
+    x,
+    router_w,
+    w1,
+    v,
+    w2,
 ):
-    start_time = time.perf_counter()
+    """Compute every expert, then select one output."""
 
-    outputs, storage_types = simulator.execute(
-        executable,
-        flat_arguments,
-        owner_ranks,
+    router_logits = x @ router_w
+
+    router_probabilities = secure_softmax(
+        router_logits,
+        axis=-1,
     )
 
-    elapsed_seconds = (
-        time.perf_counter()
-        - start_time
+    selected_experts = secure_top1_index(
+        router_logits
+    )
+
+    expert_outputs = []
+
+    for expert_id in range(w1.shape[0]):
+        expert_outputs.append(
+            secure_expert_forward(
+                x,
+                w1[expert_id],
+                v[expert_id],
+                w2[expert_id],
+            )
+        )
+
+    stacked_outputs = jnp.stack(
+        expert_outputs,
+        axis=1,
+    )
+
+    selection_mask = jax.nn.one_hot(
+        selected_experts,
+        w1.shape[0],
+        dtype=x.dtype,
+    )
+
+    selected_output = jnp.sum(
+        stacked_outputs
+        * selection_mask[:, :, None],
+        axis=1,
+    )
+
+    selected_gate = jnp.sum(
+        router_probabilities
+        * selection_mask,
+        axis=-1,
     )
 
     return (
-        outputs,
-        storage_types,
-        elapsed_seconds,
+        selected_output
+        * selected_gate[:, None]
     )
 
 
-def benchmark_one_method(
+def select_then_compute_topk(
+    x,
+    router_w,
+    w1,
+    v,
+    w2,
+):
+    """Select parameters with one-hot, then run one expert."""
+
+    router_logits = x @ router_w
+
+    router_probabilities = secure_softmax(
+        router_logits,
+        axis=-1,
+    )
+
+    selected_experts = secure_top1_index(
+        router_logits
+    )
+
+    selection_mask = jax.nn.one_hot(
+        selected_experts,
+        w1.shape[0],
+        dtype=x.dtype,
+    )
+
+    parameter_mask = selection_mask[
+        :,
+        :,
+        None,
+        None,
+    ]
+
+    selected_w1 = jnp.sum(
+        parameter_mask
+        * w1[None, :, :, :],
+        axis=1,
+    )
+
+    selected_v = jnp.sum(
+        parameter_mask
+        * v[None, :, :, :],
+        axis=1,
+    )
+
+    selected_w2 = jnp.sum(
+        parameter_mask
+        * w2[None, :, :, :],
+        axis=1,
+    )
+
+    first_projection = jnp.squeeze(
+        jnp.matmul(
+            x[:, None, :],
+            selected_w1,
+        ),
+        axis=1,
+    )
+
+    gate_projection = jnp.squeeze(
+        jnp.matmul(
+            x[:, None, :],
+            selected_v,
+        ),
+        axis=1,
+    )
+
+    hidden = (
+        si.spu_gelu(first_projection)
+        * gate_projection
+    )
+
+    expert_output = jnp.squeeze(
+        jnp.matmul(
+            hidden[:, None, :],
+            selected_w2,
+        ),
+        axis=1,
+    )
+
+    selected_gate = jnp.sum(
+        router_probabilities
+        * selection_mask,
+        axis=-1,
+    )
+
+    return (
+        expert_output
+        * selected_gate[:, None]
+    )
+
+
+def protocol1_output_only(
+    x,
+    router_w,
+    w1,
+    v,
+    w2,
+):
+    """Run the Protocol-1-aligned implementation.
+
+    Only final_output is returned so that diagnostic
+    outputs do not affect the benchmark.
+    """
+
+    return protocol1_select_then_compute_moe(
+        x,
+        router_w,
+        w1,
+        v,
+        w2,
+    )[0]
+
+
+METHODS = {
+    "baseline_all_experts_topk": (
+        baseline_all_experts_topk
+    ),
+    "select_then_compute_topk": (
+        select_then_compute_topk
+    ),
+    "protocol1_output_only": (
+        protocol1_output_only
+    ),
+}
+
+
+def compile_method(
     method_name,
     function,
     arguments,
-    owner_ranks,
-    repetitions,
 ):
-    print()
-    print("-" * 72)
-    print(f"Compiling method: {method_name}")
-    print("-" * 72)
+    """Compile one method and prepare its simulator."""
 
-    compile_start = time.perf_counter()
+    start_time = time.perf_counter()
 
     (
         executable,
@@ -90,91 +243,70 @@ def benchmark_one_method(
 
     compile_seconds = (
         time.perf_counter()
-        - compile_start
-    )
-
-    print(
-        f"Compilation time: "
-        f"{compile_seconds:.6f} s"
-    )
-
-    simulator = RoleAwareSimulator()
-
-    print("Running one warm-up execution...")
-
-    (
-        warmup_outputs,
-        storage_types,
-        warmup_seconds,
-    ) = execute_once(
-        simulator,
-        executable,
-        flat_arguments,
-        owner_ranks,
-    )
-
-    print(
-        f"Warm-up time: "
-        f"{warmup_seconds:.6f} s"
-    )
-
-    measured_times = []
-    final_outputs = None
-
-    for repetition_index in range(
-        repetitions
-    ):
-        (
-            outputs,
-            _storage_types,
-            elapsed_seconds,
-        ) = execute_once(
-            simulator,
-            executable,
-            flat_arguments,
-            owner_ranks,
-        )
-
-        measured_times.append(
-            elapsed_seconds
-        )
-
-        final_outputs = outputs
-
-        print(
-            f"Run {repetition_index + 1}/"
-            f"{repetitions}: "
-            f"{elapsed_seconds:.6f} s"
-        )
-
-    median_seconds = statistics.median(
-        measured_times
-    )
-
-    mean_seconds = statistics.mean(
-        measured_times
-    )
-
-    minimum_seconds = min(
-        measured_times
-    )
-
-    maximum_seconds = max(
-        measured_times
+        - start_time
     )
 
     return {
-        "method": method_name,
+        "name": method_name,
+        "executable": executable,
+        "flat_arguments": flat_arguments,
+        "simulator": RoleAwareSimulator(),
         "compile_seconds": compile_seconds,
-        "warmup_seconds": warmup_seconds,
-        "median_seconds": median_seconds,
-        "mean_seconds": mean_seconds,
-        "minimum_seconds": minimum_seconds,
-        "maximum_seconds": maximum_seconds,
-        "times": measured_times,
-        "outputs": final_outputs,
-        "storage_types": storage_types,
+        "warmup_seconds": None,
+        "times": [],
+        "last_output": None,
+        "storage_types": None,
     }
+
+
+def execute_once(
+    compiled_entry,
+    owner_ranks,
+):
+    """Execute one two-party secure computation."""
+
+    start_time = time.perf_counter()
+
+    (
+        outputs,
+        storage_types,
+    ) = compiled_entry[
+        "simulator"
+    ].execute(
+        compiled_entry["executable"],
+        compiled_entry["flat_arguments"],
+        owner_ranks,
+    )
+
+    elapsed_seconds = (
+        time.perf_counter()
+        - start_time
+    )
+
+    return (
+        np.asarray(outputs[0]),
+        storage_types,
+        elapsed_seconds,
+    )
+
+
+def maximum_absolute_error(
+    actual,
+    expected,
+):
+    """Calculate maximum output difference."""
+
+    actual = np.asarray(actual)
+    expected = np.asarray(expected)
+
+    return float(
+        np.max(
+            np.abs(
+                actual
+                - expected
+            )
+        )
+    )
 
 
 def main():
@@ -188,29 +320,46 @@ def main():
         8,
     ]
 
-    repetitions = 3
+    repetitions = 7
     seed = 2026
 
-    output_directory = (
+    result_directory = (
         Path.home()
         / "SecMoE"
         / "results"
     )
 
-    output_directory.mkdir(
+    result_directory.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    csv_path = (
-        output_directory
-        / "protocol1_comparison.csv"
+    summary_path = (
+        result_directory
+        / "protocol1_fair_summary.csv"
     )
 
-    all_rows = []
+    raw_path = (
+        result_directory
+        / "protocol1_fair_raw.csv"
+    )
+
+    # x uses ordinary arithmetic secret sharing.
+    # All model parameters belong to server rank 1.
+    owner_ranks = [
+        None,
+        SERVER_RANK,
+        SERVER_RANK,
+        SERVER_RANK,
+        SERVER_RANK,
+    ]
+
+    summary_rows = []
+    raw_rows = []
 
     print(
-        "===== Unified SecMoE Benchmark ====="
+        "===== Fair SecMoE "
+        "Protocol-1 Benchmark ====="
     )
 
     print(
@@ -233,14 +382,25 @@ def main():
         f"repetitions: {repetitions}"
     )
 
+    print(
+        "All methods use the same secure "
+        "TopK and return only final_output."
+    )
+
     for number_of_experts in expert_counts:
-        print()
-        print("=" * 80)
+        print(
+            "\n"
+            + "=" * 80
+        )
+
         print(
             "Number of experts: "
             f"{number_of_experts}"
         )
-        print("=" * 80)
+
+        print(
+            "=" * 80
+        )
 
         arguments = create_protocol1_test_data(
             seed=seed,
@@ -252,136 +412,238 @@ def main():
             ),
         )
 
-        owner_ranks = [
-            None,
-            SERVER_RANK,
-            SERVER_RANK,
-            SERVER_RANK,
-            SERVER_RANK,
-        ]
-
-        results = {}
-
-        for method_name, function in (
-            METHODS.items()
-        ):
-            result = benchmark_one_method(
-                method_name=method_name,
-                function=function,
-                arguments=arguments,
-                owner_ranks=owner_ranks,
-                repetitions=repetitions,
+        compiled_methods = {
+            method_name: compile_method(
+                method_name,
+                function,
+                arguments,
             )
+            for method_name, function
+            in METHODS.items()
+        }
 
-            results[method_name] = result
-
-        baseline_output = np.asarray(
-            results[
-                "baseline_all_experts"
-            ]["outputs"][0]
-        )
-
-        baseline_median = results[
-            "baseline_all_experts"
-        ]["median_seconds"]
-
-        print()
         print(
-            "===== Correctness and Speedup ====="
+            "\n===== Warm-up ====="
         )
 
-        for method_name, result in (
-            results.items()
+        for method_name, entry in (
+            compiled_methods.items()
         ):
-            current_output = np.asarray(
-                result["outputs"][0]
+            (
+                output,
+                storage_types,
+                warmup_seconds,
+            ) = execute_once(
+                entry,
+                owner_ranks,
             )
 
-            output_error = max_absolute_error(
-                current_output,
-                baseline_output,
+            entry["last_output"] = output
+
+            entry["storage_types"] = (
+                storage_types
+            )
+
+            entry["warmup_seconds"] = (
+                warmup_seconds
+            )
+
+            print(
+                f"{method_name}: "
+                f"{warmup_seconds:.6f} s "
+                f"(compile "
+                f"{entry['compile_seconds']:.6f} s)"
+            )
+
+        method_names = list(
+            METHODS.keys()
+        )
+
+        # Rotate method order in every round.
+        # This prevents one method from always running
+        # first or last.
+        for round_index in range(
+            repetitions
+        ):
+            offset = (
+                round_index
+                % len(method_names)
+            )
+
+            round_order = (
+                method_names[offset:]
+                + method_names[:offset]
+            )
+
+            print(
+                f"\nRound "
+                f"{round_index + 1}/"
+                f"{repetitions}"
+            )
+
+            print(
+                "Execution order:",
+                round_order,
+            )
+
+            for method_name in round_order:
+                entry = compiled_methods[
+                    method_name
+                ]
+
+                (
+                    output,
+                    storage_types,
+                    elapsed_seconds,
+                ) = execute_once(
+                    entry,
+                    owner_ranks,
+                )
+
+                entry["times"].append(
+                    elapsed_seconds
+                )
+
+                entry["last_output"] = (
+                    output
+                )
+
+                entry["storage_types"] = (
+                    storage_types
+                )
+
+                raw_rows.append(
+                    {
+                        "number_of_experts": (
+                            number_of_experts
+                        ),
+                        "round": (
+                            round_index + 1
+                        ),
+                        "method": (
+                            method_name
+                        ),
+                        "elapsed_seconds": (
+                            elapsed_seconds
+                        ),
+                    }
+                )
+
+                print(
+                    f"{method_name}: "
+                    f"{elapsed_seconds:.6f} s"
+                )
+
+        baseline_name = (
+            "baseline_all_experts_topk"
+        )
+
+        baseline_output = (
+            compiled_methods[
+                baseline_name
+            ]["last_output"]
+        )
+
+        baseline_median = (
+            statistics.median(
+                compiled_methods[
+                    baseline_name
+                ]["times"]
+            )
+        )
+
+        print(
+            "\n===== Summary ====="
+        )
+
+        for method_name, entry in (
+            compiled_methods.items()
+        ):
+            execution_times = entry[
+                "times"
+            ]
+
+            median_seconds = (
+                statistics.median(
+                    execution_times
+                )
+            )
+
+            mean_seconds = (
+                statistics.mean(
+                    execution_times
+                )
+            )
+
+            stdev_seconds = (
+                statistics.stdev(
+                    execution_times
+                )
             )
 
             speedup = (
                 baseline_median
-                / result["median_seconds"]
+                / median_seconds
             )
 
-            storage_types = result[
-                "storage_types"
-            ]
+            output_error = (
+                maximum_absolute_error(
+                    entry["last_output"],
+                    baseline_output,
+                )
+            )
 
-            server_private = all(
+            server_weights_private = all(
                 "Priv2k" in storage_type
                 for storage_type
-                in storage_types[1:]
-            )
-
-            print()
-            print(
-                f"method: {method_name}"
+                in entry[
+                    "storage_types"
+                ][1:]
             )
 
             print(
-                "median_seconds: "
-                f"{result['median_seconds']:.6f}"
+                f"{method_name}: "
+                f"median={median_seconds:.6f} s, "
+                f"mean={mean_seconds:.6f} s, "
+                f"stdev={stdev_seconds:.6f} s, "
+                f"speedup={speedup:.4f}x, "
+                f"error={output_error:.10f}, "
+                f"private="
+                f"{server_weights_private}"
             )
 
-            print(
-                "mean_seconds: "
-                f"{result['mean_seconds']:.6f}"
-            )
-
-            print(
-                "speedup_vs_baseline: "
-                f"{speedup:.4f}x"
-            )
-
-            print(
-                "output_error_vs_baseline: "
-                f"{output_error:.10f}"
-            )
-
-            print(
-                "server_weights_private: "
-                f"{server_private}"
-            )
-
-            all_rows.append(
+            summary_rows.append(
                 {
                     "number_of_experts": (
                         number_of_experts
                     ),
-                    "method": method_name,
+                    "method": (
+                        method_name
+                    ),
                     "compile_seconds": (
-                        result[
+                        entry[
                             "compile_seconds"
                         ]
                     ),
                     "warmup_seconds": (
-                        result[
+                        entry[
                             "warmup_seconds"
                         ]
                     ),
                     "median_seconds": (
-                        result[
-                            "median_seconds"
-                        ]
+                        median_seconds
                     ),
                     "mean_seconds": (
-                        result[
-                            "mean_seconds"
-                        ]
+                        mean_seconds
+                    ),
+                    "stdev_seconds": (
+                        stdev_seconds
                     ),
                     "minimum_seconds": (
-                        result[
-                            "minimum_seconds"
-                        ]
+                        min(execution_times)
                     ),
                     "maximum_seconds": (
-                        result[
-                            "maximum_seconds"
-                        ]
+                        max(execution_times)
                     ),
                     "speedup_vs_baseline": (
                         speedup
@@ -390,48 +652,58 @@ def main():
                         output_error
                     ),
                     "server_weights_private": (
-                        server_private
+                        server_weights_private
                     ),
                 }
             )
 
-    with csv_path.open(
+    with summary_path.open(
         "w",
         newline="",
         encoding="utf-8",
-    ) as csv_file:
-        fieldnames = [
-            "number_of_experts",
-            "method",
-            "compile_seconds",
-            "warmup_seconds",
-            "median_seconds",
-            "mean_seconds",
-            "minimum_seconds",
-            "maximum_seconds",
-            "speedup_vs_baseline",
-            "output_error_vs_baseline",
-            "server_weights_private",
-        ]
-
+    ) as summary_file:
         writer = csv.DictWriter(
-            csv_file,
-            fieldnames=fieldnames,
+            summary_file,
+            fieldnames=list(
+                summary_rows[0].keys()
+            ),
         )
 
         writer.writeheader()
         writer.writerows(
-            all_rows
+            summary_rows
         )
 
-    print()
-    print("=" * 80)
-    print("Benchmark completed.")
+    with raw_path.open(
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as raw_file:
+        writer = csv.DictWriter(
+            raw_file,
+            fieldnames=list(
+                raw_rows[0].keys()
+            ),
+        )
+
+        writer.writeheader()
+        writer.writerows(
+            raw_rows
+        )
+
     print(
-        "CSV saved to:",
-        csv_path,
+        "\nBenchmark completed."
     )
-    print("=" * 80)
+
+    print(
+        "Summary CSV:",
+        summary_path,
+    )
+
+    print(
+        "Raw CSV:",
+        raw_path,
+    )
 
 
 if __name__ == "__main__":

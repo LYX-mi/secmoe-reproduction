@@ -93,3 +93,21 @@ py_binary(
         "//spu/utils:simulation",
     ],
 )
+
+
+py_binary(
+    name = "secure_moe_protocol1_ole_aligned",
+    srcs = [
+        "secure_moe_protocol1_ole_aligned.py",
+        "secure_moe_protocol1_select_then_compute.py",
+        "secure_moe_correctness.py",
+        "switch_moe_reference.py",
+    ],
+    main = "secure_moe_protocol1_ole_aligned.py",
+    deps = [
+        "//spu:api",
+        "//spu/intrinsic:all_intrinsics",
+        "//spu/utils:frontend",
+        "//spu/utils:simulation",
+    ],
+)
