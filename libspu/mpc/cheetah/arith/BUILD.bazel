@@ -175,3 +175,40 @@ spu_cc_test(
         "//libspu/mpc/utils:simulate",
     ],
 )
+
+spu_cc_library(
+    name = "secmoe_routing_topk",
+    srcs = ["secmoe_routing_topk.cc"],
+    hdrs = ["secmoe_routing_topk.h"],
+    deps = [
+        "//libspu/core:context",
+        "//libspu/core:prelude",
+        "//libspu/core:value",
+        "//libspu/kernel/hal:constants",
+        "//libspu/kernel/hal:polymorphic",
+        "//libspu/kernel/hal:ring",
+        "//libspu/kernel/hal:shape_ops",
+        "//libspu/kernel/hlo:rank",
+    ],
+)
+
+spu_cc_test(
+    name = "secmoe_routing_topk_test",
+    srcs = ["secmoe_routing_topk_test.cc"],
+    deps = [
+        ":secmoe_routing_topk",
+        "//libspu/core:context",
+        "//libspu/core:value",
+        "//libspu/kernel/hal:constants",
+        "//libspu/kernel/hal:polymorphic",
+        "//libspu/kernel/hal:public_helper",
+        "//libspu/kernel/hal:ring",
+        "//libspu/kernel/hal:shape_ops",
+        "//libspu/kernel/hal:type_cast",
+        "//libspu/kernel/hlo:rank",
+        "//libspu/mpc:factory",
+        "//libspu/mpc/cheetah:type",
+        "//libspu/mpc/utils:ring_ops",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
