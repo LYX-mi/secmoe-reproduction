@@ -14,6 +14,7 @@
 
 #include "libspu/mpc/cheetah/arith/matmat_prot.h"
 #include "libspu/mpc/cheetah/arith/secmoe_protocol2_gelu.h"
+#include "libspu/mpc/cheetah/arith/secmoe_routing_topk.h"
 #include "libspu/core/context.h"
 #include "libspu/core/value.h"
 #include "libspu/kernel/hal/fxp_base.h"
@@ -4590,59 +4591,73 @@ TEST_P(
 
   // =======================================================
   // Part 1:
-  // Boolean one-hot shares -> B2A arithmetic shares.
+  // Secret routing scores
+  // -> secure Top-1
+  // -> Boolean one-hot shares
+  // -> B2A arithmetic shares.
+  //
+  // The route is no longer supplied as a manually
+  // constructed one-hot vector.
   // =======================================================
 
-  const Shape one_hot_shape = {
-      1,
-      kNumberOfExperts};
+  // Q18 routing scores:
+  //
+  // [0.10, -0.20, 0.35, 0.80,
+  //  0.05,  0.40, -0.10, 0.25]
+  //
+  // The unique maximum is expert 3.
+  static constexpr int64_t
+      routing_scores_q18[kNumberOfExperts] = {
+          26214,
+          -52429,
+          91750,
+          209715,
+          13107,
+          104858,
+          -26214,
+          65536,
+      };
 
-  auto boolean_type =
-      makeType<BShrTy>(
-          field_,
-          1);
+  const Shape routing_score_shape = {
+      kNumberOfExperts,
+  };
 
-  auto boolean_share_0 =
+  auto routing_score_share_0 =
       ring_zeros(
           field_,
-          one_hot_shape)
-          .as(boolean_type);
+          routing_score_shape);
 
-  auto boolean_share_1 =
+  auto routing_score_share_1 =
       ring_zeros(
           field_,
-          one_hot_shape)
-          .as(boolean_type);
+          routing_score_shape);
 
-  DISPATCH_ALL_FIELDS(field_, "", [&]() {
-    auto share_0_view =
-        NdArrayView<ring2k_t>(
-            boolean_share_0);
+  auto routing_score_share_0_view =
+      NdArrayView<uint64_t>(
+          routing_score_share_0);
 
-    auto share_1_view =
-        NdArrayView<ring2k_t>(
-            boolean_share_1);
+  auto routing_score_share_1_view =
+      NdArrayView<uint64_t>(
+          routing_score_share_1);
 
-    for (int64_t expert = 0;
-         expert < kNumberOfExperts;
-         ++expert) {
-      const ring2k_t expected_bit =
-          expert == kSelectedExpert
-              ? ring2k_t{1}
-              : ring2k_t{0};
+  for (int64_t expert = 0;
+       expert < kNumberOfExperts;
+       ++expert) {
+    const uint64_t clear_score =
+        static_cast<uint64_t>(
+            routing_scores_q18[expert]);
 
-      const ring2k_t party_0_bit =
-          static_cast<ring2k_t>(
-              (5 * expert + 1) & 1);
+    // Deterministic test-only additive share.
+    const uint64_t party_0_share =
+        static_cast<uint64_t>(
+            1009 + 37 * expert);
 
-      share_0_view[expert] =
-          party_0_bit;
+    routing_score_share_0_view[expert] =
+        party_0_share;
 
-      share_1_view[expert] =
-          party_0_bit
-          ^ expected_bit;
-    }
-  });
+    routing_score_share_1_view[expert] =
+        clear_score - party_0_share;
+  }
 
   NdArrayRef arithmetic_share_0;
   NdArrayRef arithmetic_share_1;
@@ -4650,25 +4665,100 @@ TEST_P(
   utils::simulate(
       kWorldSize,
       [&](std::shared_ptr<
-          yacl::link::Context> link_context) {
-        auto communicator =
-            std::make_shared<Communicator>(
-                link_context);
+              yacl::link::Context> link_context) {
+        RuntimeConfig routing_config;
 
-        BasicOTProtocols ot_protocol(
-            communicator,
-            CheetahOtKind::YACL_Softspoken);
+        routing_config.set_protocol(
+            ProtocolKind::CHEETAH);
+
+        routing_config.set_field(
+            field_);
+
+        routing_config.set_fxp_fraction_bits(
+            18);
+
+        routing_config
+            .mutable_cheetah_2pc_config()
+            ->set_enable_mul_lsb_error(
+                true);
+
+        SPUContext routing_context(
+            routing_config,
+            link_context);
+
+        Factory::RegisterProtocol(
+            &routing_context,
+            link_context);
+
+        const NdArrayRef& local_score_share =
+            link_context->Rank() == 0
+                ? routing_score_share_0
+                : routing_score_share_1;
+
+        Value secret_routing_scores(
+            local_score_share.as(
+                makeType<AShrTy>(
+                    field_)),
+            DT_F64);
+
+        auto routing =
+            SecMoESecretTop1Routing(
+                &routing_context,
+                secret_routing_scores,
+                kNumberOfExperts);
+
+        ASSERT_TRUE(
+            routing.top_index.isSecret());
+
+        ASSERT_TRUE(
+            routing.boolean_one_hot
+                .storage_type()
+                .isa<BShare>());
+
+        ASSERT_TRUE(
+            routing.arithmetic_one_hot
+                .storage_type()
+                .isa<AShrTy>());
+
+        ASSERT_EQ(
+            routing.boolean_one_hot.numel(),
+            kNumberOfExperts);
+
+        ASSERT_EQ(
+            routing.arithmetic_one_hot.numel(),
+            kNumberOfExperts);
 
         if (link_context->Rank() == 0) {
           arithmetic_share_0 =
-              ot_protocol.B2A(
-                  boolean_share_0);
+              routing
+                  .arithmetic_one_hot
+                  .data()
+                  .clone();
+
+          std::cout
+              << "SECMOE_PROTOCOL1_ROUTING"
+              << " expected_top_index="
+              << kSelectedExpert
+              << " top_index_remains_secret=1"
+              << " boolean_storage_is_bshare=1"
+              << " arithmetic_storage_is_ashare=1"
+              << std::endl;
         } else {
           arithmetic_share_1 =
-              ot_protocol.B2A(
-                  boolean_share_1);
+              routing
+                  .arithmetic_one_hot
+                  .data()
+                  .clone();
         }
       });
+
+  ASSERT_EQ(
+      arithmetic_share_0.numel(),
+      kNumberOfExperts);
+
+  ASSERT_EQ(
+      arithmetic_share_1.numel(),
+      kNumberOfExperts);
 
   auto client_selector_share =
       arithmetic_share_0.as(
@@ -6213,7 +6303,7 @@ TEST_P(
   }
 
   std::cout
-      << "SECMOE_PROTOCOL1_END_TO_END_AFTER_ONE_HOT"
+      << "SECMOE_PROTOCOL1_END_TO_END_AFTER_SECRET_TOPK"
       << " expected_0="
       << expected_final_q18[0]
       << " reconstructed_0="

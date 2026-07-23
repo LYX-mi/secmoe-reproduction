@@ -130,6 +130,7 @@ spu_cc_test(
     name = "secmoe_ctct_feasibility_test",
     srcs = ["secmoe_ctct_feasibility_test.cc"],
     deps = [
+        ":secmoe_routing_topk",
         ":secmoe_protocol2_gelu",
         ":matmat_prot",
         "//libspu/mpc:factory",
