@@ -213,3 +213,22 @@ spu_cc_test(
         "//libspu/mpc/utils:simulate",
     ],
 )
+
+spu_cc_test(
+    name = "secmoe_router_linear_test",
+    srcs = ["secmoe_router_linear_test.cc"],
+    deps = [
+        ":secmoe_routing_topk",
+        "//libspu/core:context",
+        "//libspu/core:value",
+        "//libspu/kernel/hal:polymorphic",
+        "//libspu/kernel/hal:public_helper",
+        "//libspu/kernel/hal:shape_ops",
+        "//libspu/kernel/hal:type_cast",
+        "//libspu/mpc:factory",
+        "//libspu/mpc/cheetah:type",
+        "//libspu/mpc/common:pv2k",
+        "//libspu/mpc/utils:ring_ops",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
