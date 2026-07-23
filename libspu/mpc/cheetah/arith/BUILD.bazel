@@ -125,3 +125,53 @@ spu_cc_test(
     srcs = ["vector_encoder_test.cc"],
     deps = [":arith_comm"],
 )
+
+spu_cc_test(
+    name = "secmoe_ctct_feasibility_test",
+    srcs = ["secmoe_ctct_feasibility_test.cc"],
+    deps = [
+        ":secmoe_protocol2_gelu",
+        ":matmat_prot",
+        "//libspu/mpc:factory",
+        "//libspu/kernel/hal:ring",
+        "//libspu/kernel/hal:fxp_base",
+        "//libspu/core:value",
+        "//libspu/core:context",
+        "//libspu/mpc/cheetah:type",
+        "//libspu/mpc/cheetah/ot:ot",
+        "//libspu/mpc/utils:simulate",
+        "@com_github_xtensor_xtensor//:xtensor",
+    ],
+)
+
+
+spu_cc_library(
+    name = "secmoe_protocol2_gelu",
+    srcs = ["secmoe_protocol2_gelu.cc"],
+    hdrs = ["secmoe_protocol2_gelu.h"],
+    deps = [
+        "//libspu/core:context",
+        "//libspu/core:prelude",
+        "//libspu/core:value",
+        "//libspu/kernel/hal:constants",
+        "//libspu/kernel/hal:fxp_base",
+        "//libspu/kernel/hal:ring",
+    ],
+)
+
+spu_cc_test(
+    name = "secmoe_nonlinear_bridge_test",
+    srcs = ["secmoe_nonlinear_bridge_test.cc"],
+    deps = [
+        ":secmoe_protocol2_gelu",
+        "//libspu/core:context",
+        "//libspu/core:value",
+        "//libspu/kernel/hal:fxp_base",
+        "//libspu/kernel/hal:constants",
+        "//libspu/kernel/hal:ring",
+        "//libspu/mpc:factory",
+        "//libspu/mpc/cheetah:type",
+        "//libspu/mpc/utils:ring_ops",
+        "//libspu/mpc/utils:simulate",
+    ],
+)

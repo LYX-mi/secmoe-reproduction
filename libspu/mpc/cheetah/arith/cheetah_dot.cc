@@ -161,40 +161,13 @@ struct CheetahDot::Impl : public EnableCPRNG {
   void H2A(absl::Span<RLWECt> ct, absl::Span<RLWEPt> rnd_mask,
            size_t target_modulus_size, const seal::PublicKey &pk,
            const seal::SEALContext &context) {
-    seal::Evaluator evaluator(context);
-    size_t num_poly = ct.size();
-    SPU_ENFORCE(num_poly > 0);
-    SPU_ENFORCE_EQ(rnd_mask.size(), num_poly);
-
-    constexpr int64_t heuristic_group = 4;
-    yacl::parallel_for(
-        0, num_poly, heuristic_group, [&](size_t bgn, size_t end) {
-          RLWECt zero_ct;
-          for (size_t idx = bgn; idx < end; ++idx) {
-            // NOTE(lwj): we hope the final ct is in the non-ntt form
-            // We perform the intt before the modulus down which is faster
-            // than modulus down then intt.
-            InvNttInplace(ct[idx], context);
-
-            ModulusSwtichInplace(ct[idx], target_modulus_size, context);
-
-            // TODO(lwj): improve the performance of pk encryption of zero.
-            // ct <- ct + enc(0)
-            if (0 == zero_ct.size()) {
-              seal::util::encrypt_zero_asymmetric(
-                  pk, context, ct[idx].parms_id(), ct[idx].is_ntt_form(),
-                  zero_ct);
-            }
-
-            evaluator.add_inplace(ct[idx], zero_ct);
-            SPU_ENFORCE(!ct[idx].is_ntt_form());
-
-            // sample r <- Rq
-            // (ct[0] - r, ct[1]) <- ct
-            UniformPoly(context, &rnd_mask[idx], ct[idx].parms_id());
-            SubPlainInplace(ct[idx], rnd_mask[idx], context);
-          }
-        });
+    H2AInplace(
+        ct,
+        rnd_mask,
+        *this,
+        target_modulus_size,
+        pk,
+        context);
   }
 
  private:

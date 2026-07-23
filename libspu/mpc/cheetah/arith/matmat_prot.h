@@ -12,12 +12,30 @@
 // limitations under the License.
 
 #pragma once
+
+#include "seal/publickey.h"
 #include "libspu/core/prelude.h"
 #include "libspu/mpc/cheetah/arith/common.h"
 #include "libspu/mpc/cheetah/arith/vector_encoder.h"
 #include "libspu/mpc/cheetah/rlwe/types.h"
 
 namespace spu::mpc::cheetah {
+
+
+// Convert HE ciphertexts Enc(Delta * m) into arithmetic shares.
+//
+// The ciphertexts are replaced by Enc(Delta * m - r), while
+// rnd_mask stores the random server-side share material.
+//
+// This function reuses the original CheetahDot H2A procedure.
+void H2AInplace(
+    absl::Span<RLWECt> ciphertexts,
+    absl::Span<RLWEPt> random_masks,
+    EnableCPRNG& random_source,
+    size_t target_modulus_size,
+    const seal::PublicKey& public_key,
+    const seal::SEALContext& context);
+
 
 class MatMatProtocol {
  public:
@@ -110,6 +128,17 @@ class MatMatProtocol {
                absl::Span<RLWECt> out_mat) const;
 
   void Compute(absl::Span<const RLWEPt> lhs_mat,
+               absl::Span<const RLWECt> rhs_mat, const Meta& meta,
+               absl::Span<RLWECt> out_mat) const;
+
+  // SecMoE experimental single-depth ciphertext-ciphertext
+  // matrix multiplication.
+  //
+  // Exactly one input side must carry the Delta scaling factor.
+  // The result is intentionally not relinearized and should be
+  // masked/decrypted or converted to arithmetic shares before
+  // another ciphertext multiplication.
+  void Compute(absl::Span<const RLWECt> lhs_mat,
                absl::Span<const RLWECt> rhs_mat, const Meta& meta,
                absl::Span<RLWECt> out_mat) const;
 

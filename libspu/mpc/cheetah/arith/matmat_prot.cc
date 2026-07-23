@@ -28,6 +28,7 @@
 #include "libspu/mpc/cheetah/rlwe/lwe_ct.h"
 #include "libspu/mpc/cheetah/rlwe/utils.h"
 #include "libspu/mpc/utils/ring_ops.h"
+#include "seal/util/rlwe.h"
 
 template <>
 struct std::hash<spu::mpc::cheetah::MatMatProtocol::Meta> {
@@ -334,6 +335,32 @@ template <>
 void MatMatProtocol::FusedMulAddInplace(RLWECt& acc, const RLWEPt& lhs,
                                         const RLWECt& rhs) const {
   FusedMulAddInplace<RLWECt, RLWECt, RLWEPt>(acc, rhs, lhs);
+}
+
+template <>
+void MatMatProtocol::FusedMulAddInplace(RLWECt& acc, const RLWECt& lhs,
+                                        const RLWECt& rhs) const {
+  SPU_ENFORCE(lhs.parms_id() == rhs.parms_id());
+  SPU_ENFORCE(lhs.is_ntt_form());
+  SPU_ENFORCE(rhs.is_ntt_form());
+
+  seal::Evaluator evaluator(context_);
+  RLWECt product;
+
+  // Reuse Microsoft SEAL's ciphertext multiplication.
+  // Two fresh size-2 ciphertexts produce a size-3 result.
+  evaluator.multiply(lhs, rhs, product);
+
+  if (acc.size() == 0) {
+    acc = product;
+    return;
+  }
+
+  SPU_ENFORCE(acc.parms_id() == product.parms_id());
+  SPU_ENFORCE(acc.is_ntt_form() == product.is_ntt_form());
+  SPU_ENFORCE_EQ(acc.size(), product.size());
+
+  evaluator.add_inplace(acc, product);
 }
 
 template <>
@@ -728,6 +755,97 @@ void MatMatProtocol::Compute(absl::Span<const RLWEPt> lhs_mat,
     ct.release();
   }
   DoCompute<RLWEPt, RLWECt, RLWECt>(lhs_mat, rhs_mat, meta, out_mat);
+}
+
+void MatMatProtocol::Compute(absl::Span<const RLWECt> lhs_mat,
+                             absl::Span<const RLWECt> rhs_mat,
+                             const Meta& meta,
+                             absl::Span<RLWECt> out_mat) const {
+  for (auto& ct : out_mat) {
+    ct.release();
+  }
+
+  DoCompute<RLWECt, RLWECt, RLWECt>(
+      lhs_mat,
+      rhs_mat,
+      meta,
+      out_mat);
+}
+
+
+void H2AInplace(
+    absl::Span<RLWECt> ciphertexts,
+    absl::Span<RLWEPt> random_masks,
+    EnableCPRNG& random_source,
+    size_t target_modulus_size,
+    const seal::PublicKey& public_key,
+    const seal::SEALContext& context) {
+  seal::Evaluator evaluator(context);
+
+  const size_t number_of_polynomials =
+      ciphertexts.size();
+
+  SPU_ENFORCE(
+      number_of_polynomials > 0);
+
+  SPU_ENFORCE_EQ(
+      random_masks.size(),
+      number_of_polynomials);
+
+  constexpr int64_t heuristic_group = 4;
+
+  yacl::parallel_for(
+      0,
+      number_of_polynomials,
+      heuristic_group,
+      [&](size_t begin, size_t end) {
+        RLWECt encrypted_zero;
+
+        for (size_t index = begin;
+             index < end;
+             ++index) {
+          // Preserve the original Cheetah H2A order:
+          //
+          // 1. inverse NTT;
+          // 2. modulus switch;
+          // 3. add Enc(0);
+          // 4. subtract a random plaintext mask.
+          InvNttInplace(
+              ciphertexts[index],
+              context);
+
+          ModulusSwtichInplace(
+              ciphertexts[index],
+              target_modulus_size,
+              context);
+
+          if (encrypted_zero.size() == 0) {
+            seal::util::encrypt_zero_asymmetric(
+                public_key,
+                context,
+                ciphertexts[index].parms_id(),
+                ciphertexts[index].is_ntt_form(),
+                encrypted_zero);
+          }
+
+          evaluator.add_inplace(
+              ciphertexts[index],
+              encrypted_zero);
+
+          SPU_ENFORCE(
+              !ciphertexts[index].is_ntt_form());
+
+          random_source.UniformPoly(
+              context,
+              &random_masks[index],
+              ciphertexts[index].parms_id());
+
+          SubPlainInplace(
+              ciphertexts[index],
+              random_masks[index],
+              context);
+        }
+      });
 }
 
 }  // namespace spu::mpc::cheetah

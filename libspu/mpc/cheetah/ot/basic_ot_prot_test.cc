@@ -127,6 +127,177 @@ TEST_P(BasicOTProtTest, SingleB2A) {
   });
 }
 
+
+TEST_P(BasicOTProtTest, SecMoEOneHotB2A) {
+  constexpr size_t kWorldSize = 2;
+  constexpr int64_t kNumberOfExperts = 8;
+  constexpr int64_t kSelectedExpert = 3;
+
+  const Shape shape = {
+      kNumberOfExperts};
+
+  const FieldType field =
+      std::get<0>(GetParam());
+
+  const auto ot_type =
+      std::get<1>(GetParam());
+
+  if (field != FieldType::FM64) {
+    GTEST_SKIP()
+        << "SecMoE one-hot B2A test targets FM64";
+  }
+
+  // One bit is packed in each Boolean-share element.
+  auto boolean_type =
+      makeType<BShrTy>(
+          field,
+          1);
+
+  auto boolean_share_0 =
+      ring_zeros(
+          field,
+          shape)
+          .as(boolean_type);
+
+  auto boolean_share_1 =
+      ring_zeros(
+          field,
+          shape)
+          .as(boolean_type);
+
+  // Build Boolean shares satisfying:
+  //
+  // share_0 XOR share_1 = one_hot(selected_expert).
+  //
+  // Neither party individually holds the one-hot vector.
+  DISPATCH_ALL_FIELDS(field, "", [&]() {
+    auto share_0_view =
+        NdArrayView<ring2k_t>(
+            boolean_share_0);
+
+    auto share_1_view =
+        NdArrayView<ring2k_t>(
+            boolean_share_1);
+
+    for (int64_t index = 0;
+         index < kNumberOfExperts;
+         ++index) {
+      const ring2k_t expected_bit =
+          index == kSelectedExpert
+              ? ring2k_t{1}
+              : ring2k_t{0};
+
+      // Deterministic private Boolean share.
+      const ring2k_t party_0_bit =
+          static_cast<ring2k_t>(
+              (5 * index + 1) & 1);
+
+      share_0_view[index] =
+          party_0_bit;
+
+      share_1_view[index] =
+          party_0_bit
+          ^ expected_bit;
+    }
+  });
+
+  NdArrayRef arithmetic_share_0;
+  NdArrayRef arithmetic_share_1;
+
+  // Reuse OpenBumbleBee's existing two-party
+  // BasicOTProtocols::B2A implementation.
+  utils::simulate(
+      kWorldSize,
+      [&](std::shared_ptr<
+          yacl::link::Context> context) {
+        auto communicator =
+            std::make_shared<Communicator>(
+                context);
+
+        BasicOTProtocols ot_protocol(
+            communicator,
+            ot_type);
+
+        if (context->Rank() == 0) {
+          arithmetic_share_0 =
+              ot_protocol.B2A(
+                  boolean_share_0);
+        } else {
+          arithmetic_share_1 =
+              ot_protocol.B2A(
+                  boolean_share_1);
+        }
+      });
+
+  ASSERT_EQ(
+      arithmetic_share_0.shape(),
+      shape);
+
+  ASSERT_EQ(
+      arithmetic_share_1.shape(),
+      shape);
+
+  uint64_t reconstructed_one_count = 0;
+  int64_t reconstructed_index = -1;
+
+  DISPATCH_ALL_FIELDS(field, "", [&]() {
+    auto arithmetic_0_view =
+        NdArrayView<ring2k_t>(
+            arithmetic_share_0);
+
+    auto arithmetic_1_view =
+        NdArrayView<ring2k_t>(
+            arithmetic_share_1);
+
+    for (int64_t index = 0;
+         index < kNumberOfExperts;
+         ++index) {
+      const ring2k_t reconstructed_bit =
+          (
+              arithmetic_0_view[index]
+              + arithmetic_1_view[index]
+          )
+          & ring2k_t{1};
+
+      const ring2k_t expected_bit =
+          index == kSelectedExpert
+              ? ring2k_t{1}
+              : ring2k_t{0};
+
+      EXPECT_EQ(
+          reconstructed_bit,
+          expected_bit)
+          << "expert index=" << index;
+
+      if (reconstructed_bit == 1) {
+        reconstructed_one_count += 1;
+        reconstructed_index = index;
+      }
+    }
+  });
+
+  EXPECT_EQ(
+      reconstructed_one_count,
+      1U);
+
+  EXPECT_EQ(
+      reconstructed_index,
+      kSelectedExpert);
+
+  std::cout
+      << "SECMOE_B2A_ONE_HOT"
+      << " experts="
+      << kNumberOfExperts
+      << " selected_expected="
+      << kSelectedExpert
+      << " selected_reconstructed="
+      << reconstructed_index
+      << " one_count="
+      << reconstructed_one_count
+      << std::endl;
+}
+
+
 TEST_P(BasicOTProtTest, PackedB2A) {
   size_t kWorldSize = 2;
   Shape shape = {2};
