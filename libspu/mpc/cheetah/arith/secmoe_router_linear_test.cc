@@ -21,6 +21,7 @@
 #include "libspu/kernel/hal/public_helper.h"
 #include "libspu/kernel/hal/shape_ops.h"
 #include "libspu/kernel/hal/type_cast.h"
+#include "libspu/mpc/cheetah/arith/secmoe_router_linear.h"
 #include "libspu/mpc/cheetah/arith/secmoe_routing_topk.h"
 #include "libspu/mpc/cheetah/type.h"
 #include "libspu/mpc/common/pv2k.h"
@@ -244,12 +245,13 @@ TEST(
                 .storage_type()
                 .isa<Priv2kTy>());
 
-        // DT_F64 x DT_F64 dispatches to f_mmul.
+        // Reusable SecMoE router layer:
         //
-        // f_mmul performs:
-        //   _mmul -> secure _trunc -> Q18 output.
+        // MatMulAV / DotOLE
+        // -> fixed-point secure truncation
+        // -> secret Q18 routing scores.
         auto routing_scores_2d =
-            kernel::hal::matmul(
+            SecMoERouterLinear(
                 &context,
                 secret_input,
                 private_router_weights);

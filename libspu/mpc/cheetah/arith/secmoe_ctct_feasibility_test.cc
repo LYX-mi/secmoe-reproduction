@@ -14,6 +14,7 @@
 
 #include "libspu/mpc/cheetah/arith/matmat_prot.h"
 #include "libspu/mpc/cheetah/arith/secmoe_protocol2_gelu.h"
+#include "libspu/mpc/cheetah/arith/secmoe_router_linear.h"
 #include "libspu/mpc/cheetah/arith/secmoe_routing_topk.h"
 #include "libspu/core/context.h"
 #include "libspu/core/value.h"
@@ -4815,12 +4816,13 @@ TEST_P(
 
         // DT_F64 x DT_F64:
         //
-        // hal::matmul
-        // -> MatMulAV / DotOLE
-        // -> f_mmul secure truncation
+        // Reusable SecMoE router linear layer:
+        //
+        // MatMulAV / DotOLE
+        // -> fixed-point secure truncation
         // -> secret Q18 routing scores.
         auto secret_routing_scores_2d =
-            kernel::hal::matmul(
+            SecMoERouterLinear(
                 &routing_context,
                 secret_router_input,
                 private_router_weights);
