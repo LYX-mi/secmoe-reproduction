@@ -18,6 +18,9 @@
 #include "libspu/core/context.h"
 #include "libspu/core/value.h"
 #include "libspu/kernel/hal/fxp_base.h"
+#include "libspu/mpc/common/pv2k.h"
+#include "libspu/kernel/hal/shape_ops.h"
+#include "libspu/kernel/hal/polymorphic.h"
 #include "libspu/kernel/hal/ring.h"
 #include "libspu/mpc/factory.h"
 #include "libspu/mpc/cheetah/ot/basic_ot_prot.h"
@@ -4590,6 +4593,72 @@ TEST_P(
       2U);
 
   // =======================================================
+  // Shared input for both router and expert computation.
+  //
+  // x = [0.5, -0.25, 0.75] in Q18.
+  // =======================================================
+
+  auto input =
+      ring_zeros(
+          field_,
+          {
+              1,
+              kModelDimension,
+          });
+
+  auto client_input_share =
+      ring_zeros(
+          field_,
+          {
+              1,
+              kModelDimension,
+          });
+
+  auto server_input_share =
+      ring_zeros(
+          field_,
+          {
+              1,
+              kModelDimension,
+          });
+
+  auto input_view =
+      NdArrayView<uint64_t>(
+          input);
+
+  auto client_input_view =
+      NdArrayView<uint64_t>(
+          client_input_share);
+
+  auto server_input_view =
+      NdArrayView<uint64_t>(
+          server_input_share);
+
+  input_view[0] =
+      static_cast<uint64_t>(
+          int64_t{131072});
+
+  input_view[1] =
+      static_cast<uint64_t>(
+          int64_t{-65536});
+
+  input_view[2] =
+      static_cast<uint64_t>(
+          int64_t{196608});
+
+  client_input_view[0] = 5U;
+  client_input_view[1] = 7U;
+  client_input_view[2] = 11U;
+
+  for (int64_t index = 0;
+       index < kModelDimension;
+       ++index) {
+    server_input_view[index] =
+        input_view[index]
+        - client_input_view[index];
+  }
+
+  // =======================================================
   // Part 1:
   // Secret routing scores
   // -> secure Top-1
@@ -4600,64 +4669,89 @@ TEST_P(
   // constructed one-hot vector.
   // =======================================================
 
-  // Q18 routing scores:
+  // Private router matrix Wg, shape 3 x 8.
+  //
+  // The same secret input x used by the expert branches is
+  // multiplied by this owner-0 private matrix.
+  //
+  // Only row 0 is nonzero. Since x[0] = 0.5, the expected
+  // routing scores are:
   //
   // [0.10, -0.20, 0.35, 0.80,
   //  0.05,  0.40, -0.10, 0.25]
   //
   // The unique maximum is expert 3.
-  static constexpr int64_t
-      routing_scores_q18[kNumberOfExperts] = {
-          26214,
-          -52429,
-          91750,
-          209715,
-          13107,
-          104858,
-          -26214,
-          65536,
-      };
+  constexpr int64_t kRouterWeightOwner = 0;
 
-  const Shape routing_score_shape = {
+  const Shape router_weight_shape = {
+      kModelDimension,
       kNumberOfExperts,
   };
 
-  auto routing_score_share_0 =
+  static constexpr int64_t
+      router_weights_q18[
+          kModelDimension * kNumberOfExperts] = {
+          52429,
+          -104858,
+          183501,
+          419430,
+          26214,
+          209715,
+          -52429,
+          131072,
+
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+      };
+
+  auto clear_router_weights =
       ring_zeros(
           field_,
-          routing_score_shape);
+          router_weight_shape);
 
-  auto routing_score_share_1 =
-      ring_zeros(
-          field_,
-          routing_score_shape);
-
-  auto routing_score_share_0_view =
+  auto clear_router_weights_view =
       NdArrayView<uint64_t>(
-          routing_score_share_0);
+          clear_router_weights);
 
-  auto routing_score_share_1_view =
-      NdArrayView<uint64_t>(
-          routing_score_share_1);
-
-  for (int64_t expert = 0;
-       expert < kNumberOfExperts;
-       ++expert) {
-    const uint64_t clear_score =
+  for (int64_t index = 0;
+       index
+           < kModelDimension
+                 * kNumberOfExperts;
+       ++index) {
+    clear_router_weights_view[index] =
         static_cast<uint64_t>(
-            routing_scores_q18[expert]);
-
-    // Deterministic test-only additive share.
-    const uint64_t party_0_share =
-        static_cast<uint64_t>(
-            1009 + 37 * expert);
-
-    routing_score_share_0_view[expert] =
-        party_0_share;
-
-    routing_score_share_1_view[expert] =
-        clear_score - party_0_share;
+            router_weights_q18[index]);
   }
+
+  const auto private_router_weight_type =
+      makeType<Priv2kTy>(
+          field_,
+          kRouterWeightOwner);
+
+  auto owner_router_weights =
+      clear_router_weights.as(
+          private_router_weight_type);
+
+  auto non_owner_router_weights =
+      ring_zeros(
+          field_,
+          router_weight_shape)
+          .as(private_router_weight_type);
 
   NdArrayRef arithmetic_share_0;
   NdArrayRef arithmetic_share_1;
@@ -4690,16 +4784,74 @@ TEST_P(
             &routing_context,
             link_context);
 
-        const NdArrayRef& local_score_share =
+        const NdArrayRef& local_input_share =
             link_context->Rank() == 0
-                ? routing_score_share_0
-                : routing_score_share_1;
+                ? client_input_share
+                : server_input_share;
 
-        Value secret_routing_scores(
-            local_score_share.as(
+        const NdArrayRef& local_router_weights =
+            link_context->Rank()
+                    == kRouterWeightOwner
+                ? owner_router_weights
+                : non_owner_router_weights;
+
+        Value secret_router_input(
+            local_input_share.as(
                 makeType<AShrTy>(
                     field_)),
             DT_F64);
+
+        Value private_router_weights(
+            local_router_weights,
+            DT_F64);
+
+        ASSERT_TRUE(
+            secret_router_input.isSecret());
+
+        ASSERT_TRUE(
+            private_router_weights
+                .storage_type()
+                .isa<Priv2kTy>());
+
+        // DT_F64 x DT_F64:
+        //
+        // hal::matmul
+        // -> MatMulAV / DotOLE
+        // -> f_mmul secure truncation
+        // -> secret Q18 routing scores.
+        auto secret_routing_scores_2d =
+            kernel::hal::matmul(
+                &routing_context,
+                secret_router_input,
+                private_router_weights);
+
+        ASSERT_TRUE(
+            secret_routing_scores_2d.isSecret());
+
+        ASSERT_TRUE(
+            secret_routing_scores_2d.isFxp());
+
+        ASSERT_TRUE(
+            secret_routing_scores_2d
+                .storage_type()
+                .isa<AShrTy>());
+
+        ASSERT_EQ(
+            secret_routing_scores_2d.shape()[0],
+            1);
+
+        ASSERT_EQ(
+            secret_routing_scores_2d.shape()[1],
+            kNumberOfExperts);
+
+        auto secret_routing_scores =
+            kernel::hal::reshape(
+                &routing_context,
+                secret_routing_scores_2d,
+                {
+                    kNumberOfExperts,
+                });
+
 
         auto routing =
             SecMoESecretTop1Routing(
@@ -4736,7 +4888,7 @@ TEST_P(
                   .clone();
 
           std::cout
-              << "SECMOE_PROTOCOL1_ROUTING"
+              << "SECMOE_PROTOCOL1_ROUTER_LINEAR"
               << " expected_top_index="
               << kSelectedExpert
               << " top_index_remains_secret=1"
@@ -5160,66 +5312,6 @@ TEST_P(
   //
   // x = [0.5, -0.25, 0.75] in Q18.
   // =======================================================
-
-  auto input =
-      ring_zeros(
-          field_,
-          {
-              1,
-              kModelDimension,
-          });
-
-  auto client_input_share =
-      ring_zeros(
-          field_,
-          {
-              1,
-              kModelDimension,
-          });
-
-  auto server_input_share =
-      ring_zeros(
-          field_,
-          {
-              1,
-              kModelDimension,
-          });
-
-  auto input_view =
-      NdArrayView<uint64_t>(
-          input);
-
-  auto client_input_view =
-      NdArrayView<uint64_t>(
-          client_input_share);
-
-  auto server_input_view =
-      NdArrayView<uint64_t>(
-          server_input_share);
-
-  input_view[0] =
-      static_cast<uint64_t>(
-          int64_t{131072});
-
-  input_view[1] =
-      static_cast<uint64_t>(
-          int64_t{-65536});
-
-  input_view[2] =
-      static_cast<uint64_t>(
-          int64_t{196608});
-
-  client_input_view[0] = 5U;
-  client_input_view[1] = 7U;
-  client_input_view[2] = 11U;
-
-  for (int64_t index = 0;
-       index < kModelDimension;
-       ++index) {
-    server_input_view[index] =
-        input_view[index]
-        - client_input_view[index];
-  }
 
   std::vector<RLWEPt>
       client_input_plaintexts(
@@ -6303,7 +6395,7 @@ TEST_P(
   }
 
   std::cout
-      << "SECMOE_PROTOCOL1_END_TO_END_AFTER_SECRET_TOPK"
+      << "SECMOE_PROTOCOL1_END_TO_END_AFTER_ROUTER_LINEAR"
       << " expected_0="
       << expected_final_q18[0]
       << " reconstructed_0="
