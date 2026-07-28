@@ -15,7 +15,7 @@
 
 namespace spu::mpc::cheetah {
 
-Value SecMoEProtocol2GeLU(
+std::vector<Value> SecMoEProtocol2SegmentBits(
     SPUContext* context,
     const Value& x) {
   SPU_ENFORCE(
@@ -27,13 +27,16 @@ Value SecMoEProtocol2GeLU(
   SPU_ENFORCE(
       x.isFxp());
 
-  // Public breakpoints:
+  // Protocol 2 right-closed intervals:
   //
-  // (-inf, -5), [-5, -3), [-3, -1),
-  // [-1, 1), [1, 3), [3, inf)
+  // (-inf, -5], (-5, -3], (-3, -1],
+  // (-1, 1], (1, 3], (3, inf).
   //
-  // Exact boundary ownership depends on f_less semantics
-  // and will be covered by a separate boundary test.
+  // Each predicate is:
+  //
+  //   breakpoint < x
+  //
+  // so equality remains in the segment on the left.
   static constexpr float
       breakpoints[5] = {
           -5.0F,
@@ -43,24 +46,25 @@ Value SecMoEProtocol2GeLU(
           3.0F,
       };
 
-  std::vector<Value> less_than;
-  less_than.reserve(5);
+  std::vector<Value> greater_than;
+  greater_than.reserve(5);
 
   for (const float breakpoint :
        breakpoints) {
-    less_than.emplace_back(
+    const auto public_breakpoint =
+        kernel::hal::constant(
+            context,
+            breakpoint,
+            x.dtype(),
+            x.shape());
+
+    greater_than.emplace_back(
         kernel::hal::f_less(
             context,
-            x,
-            kernel::hal::constant(
-                context,
-                breakpoint,
-                x.dtype(),
-                x.shape())));
+            public_breakpoint,
+            x));
   }
 
-  // Consecutive XOR converts the monotone comparison
-  // vector into six mutually exclusive segment bits.
   const auto one =
       kernel::hal::_constant(
           context,
@@ -70,38 +74,62 @@ Value SecMoEProtocol2GeLU(
   std::vector<Value> segment_bits;
   segment_bits.reserve(6);
 
-  segment_bits.emplace_back(
-      less_than[0]);
-
+  // x <= -5
   segment_bits.emplace_back(
       kernel::hal::_xor(
           context,
-          less_than[1],
-          less_than[0]));
-
-  segment_bits.emplace_back(
-      kernel::hal::_xor(
-          context,
-          less_than[2],
-          less_than[1]));
-
-  segment_bits.emplace_back(
-      kernel::hal::_xor(
-          context,
-          less_than[3],
-          less_than[2]));
-
-  segment_bits.emplace_back(
-      kernel::hal::_xor(
-          context,
-          less_than[4],
-          less_than[3]));
-
-  segment_bits.emplace_back(
-      kernel::hal::_xor(
-          context,
-          less_than[4],
+          greater_than[0],
           one));
+
+  // -5 < x <= -3
+  segment_bits.emplace_back(
+      kernel::hal::_xor(
+          context,
+          greater_than[0],
+          greater_than[1]));
+
+  // -3 < x <= -1
+  segment_bits.emplace_back(
+      kernel::hal::_xor(
+          context,
+          greater_than[1],
+          greater_than[2]));
+
+  // -1 < x <= 1
+  segment_bits.emplace_back(
+      kernel::hal::_xor(
+          context,
+          greater_than[2],
+          greater_than[3]));
+
+  // 1 < x <= 3
+  segment_bits.emplace_back(
+      kernel::hal::_xor(
+          context,
+          greater_than[3],
+          greater_than[4]));
+
+  // 3 < x
+  segment_bits.emplace_back(
+      greater_than[4]);
+
+  // The low-level XOR operator returns raw ring values.
+  // Mark every segment predicate explicitly as a Boolean value
+  // so reveal/dump and later Boolean operations see DT_I1.
+  for (auto& segment_bit : segment_bits) {
+    segment_bit = segment_bit.setDtype(DT_I1);
+  }
+
+  return segment_bits;
+}
+
+Value SecMoEProtocol2GeLU(
+    SPUContext* context,
+    const Value& x) {
+  auto segment_bits =
+      SecMoEProtocol2SegmentBits(
+          context,
+          x);
 
   // Coefficients are ordered as:
   //

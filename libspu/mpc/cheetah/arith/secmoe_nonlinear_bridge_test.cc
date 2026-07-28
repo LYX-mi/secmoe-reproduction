@@ -574,9 +574,9 @@ TEST(
 
   constexpr int64_t kFractionBits = 18;
 
-  // Cover all six segments. Boundary values are avoided
-  // because this test focuses on polynomial selection and
-  // evaluation rather than equality semantics.
+  // Cover the interior of all six segments.
+  // Exact Q18 breakpoint ownership is verified separately
+  // by the segment-one-hot boundary test.
   static constexpr double clear_inputs[8] = {
       -6.0,
       -4.0,
@@ -720,23 +720,23 @@ TEST(
 
   auto segment_for =
       [](double value) {
-        if (value < -5.0) {
+        if (value <= -5.0) {
           return 0;
         }
 
-        if (value < -3.0) {
+        if (value <= -3.0) {
           return 1;
         }
 
-        if (value < -1.0) {
+        if (value <= -1.0) {
           return 2;
         }
 
-        if (value < 1.0) {
+        if (value <= 1.0) {
           return 3;
         }
 
-        if (value < 3.0) {
+        if (value <= 3.0) {
           return 4;
         }
 

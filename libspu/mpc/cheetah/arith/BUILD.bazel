@@ -164,6 +164,24 @@ spu_cc_library(
     ],
 )
 
+
+spu_cc_test(
+    name = "secmoe_protocol2_boundary_test",
+    srcs = ["secmoe_protocol2_boundary_test.cc"],
+    deps = [
+        "//libspu/kernel/hal:type_cast",
+        ":secmoe_protocol2_gelu",
+        "//libspu/core:context",
+        "//libspu/core:value",
+        "//libspu/kernel/hal:public_helper",
+        "//libspu/kernel/hal:ring",
+        "//libspu/mpc:factory",
+        "//libspu/mpc/cheetah:type",
+        "//libspu/mpc/utils:ring_ops",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
+
 spu_cc_test(
     name = "secmoe_nonlinear_bridge_test",
     srcs = ["secmoe_nonlinear_bridge_test.cc"],

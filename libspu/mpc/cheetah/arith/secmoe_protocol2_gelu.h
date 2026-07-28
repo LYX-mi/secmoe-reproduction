@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include "libspu/core/value.h"
 
 namespace spu {
@@ -13,6 +15,15 @@ class SPUContext;
 }  // namespace spu
 
 namespace spu::mpc::cheetah {
+
+// Returns six mutually exclusive secret DT_I1 segment bits
+// using the Protocol 2 right-closed intervals:
+//
+//   (-inf, -5], (-5, -3], (-3, -1],
+//   (-1, 1], (1, 3], (3, inf).
+std::vector<Value> SecMoEProtocol2SegmentBits(
+    SPUContext* context,
+    const Value& x);
 
 // SecMoE Protocol 2 functional implementation.
 //
