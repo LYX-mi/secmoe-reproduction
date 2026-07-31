@@ -74,7 +74,6 @@ spu_cc_library(
         "//libspu/core:prelude",
         "//libspu/core:xt_helper",
         "//libspu/mpc/cheetah/rlwe:cheetah_rlwe",
-        "@yacl//yacl/link",
     ],
 )
 
@@ -266,6 +265,21 @@ spu_cc_test(
         "//libspu/mpc:factory",
         "//libspu/mpc/cheetah:type",
         "//libspu/mpc/common:pv2k",
+        "//libspu/mpc/utils:ring_ops",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
+
+spu_cc_test(
+    name = "secmoe_naive_vs_secmoe_benchmark",
+    srcs = ["secmoe_naive_vs_secmoe_benchmark.cc"],
+    deps = [
+        ":secmoe_protocol2_gelu",
+        "//libspu/core:context",
+        "//libspu/core:value",
+        "//libspu/kernel/hal:ring",
+        "//libspu/mpc:factory",
+        "//libspu/mpc/cheetah:type",
         "//libspu/mpc/utils:ring_ops",
         "//libspu/mpc/utils:simulate",
     ],
