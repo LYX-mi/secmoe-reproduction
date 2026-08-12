@@ -682,7 +682,8 @@ NdArrayRef SIMDBatchMMProt::ParseResult(const Meta& meta, Shape2D in_shape,
       }
     }
   });
-  return res_mat;
+  return res_mat.reshape(
+      {static_cast<int64_t>(meta.batch), meta.dims[0], meta.dims[2]});
 }
 
 

@@ -43,18 +43,18 @@
 #include "libspu/mpc/cheetah/rlwe/utils.h"
 #include "libspu/mpc/utils/ring_ops.h"
 
-struct Options {
+struct BatchMatMulOptions {
   size_t ring_bitlen;
   size_t msg_bitlen;  // msg_bitlen <= ring_bitlen
 };
 
-bool operator==(const Options &lhs, const Options &rhs) {
+bool operator==(const BatchMatMulOptions &lhs, const BatchMatMulOptions &rhs) {
   return lhs.ring_bitlen == rhs.ring_bitlen && lhs.msg_bitlen == rhs.msg_bitlen;
 }
 
 template <>
-struct std::hash<Options> {
-  size_t operator()(Options const &s) const noexcept {
+struct std::hash<BatchMatMulOptions> {
+  size_t operator()(BatchMatMulOptions const &s) const noexcept {
     return std::hash<std::string>{}(
         fmt::format("{}_{}", s.ring_bitlen, s.msg_bitlen));
   }
@@ -106,7 +106,7 @@ struct BatchMatMul::Impl : public EnableCPRNG {
   int64_t num_slots() const { return parms_.poly_modulus_degree(); }
 
   void LazyInit(FieldType field, uint32_t msg_width_hint) {
-    Options options;
+    BatchMatMulOptions options;
     options.ring_bitlen = SizeOf(field) * 8;
     options.msg_bitlen =
         msg_width_hint == 0 ? options.ring_bitlen : msg_width_hint;
@@ -118,7 +118,7 @@ struct BatchMatMul::Impl : public EnableCPRNG {
   // void LazyInitGaloisKey();
   void InitGaloisKey(const Shape4D &dim4);
 
-  void LazyExpandSEALContexts(const Options &options,
+  void LazyExpandSEALContexts(const BatchMatMulOptions &options,
                               yacl::link::Context *conn = nullptr);
 
   NdArrayRef MatMulClient(const NdArrayRef &x, yacl::link::Context *conn,
@@ -131,7 +131,7 @@ struct BatchMatMul::Impl : public EnableCPRNG {
  protected:
   // void LocalExpandSEALContexts(size_t target);
 
-  inline uint32_t TotalCRTBitLen(const Options &options) const {
+  inline uint32_t TotalCRTBitLen(const BatchMatMulOptions &options) const {
     auto bits = options.msg_bitlen + options.ring_bitlen +
                 (allow_high_prob_one_bit_error_ ? 4UL : 32UL);
     // std::cout << "TotalCRTBitLen bits: " << bits << std::endl;
@@ -144,9 +144,9 @@ struct BatchMatMul::Impl : public EnableCPRNG {
     return nprimes * small_crt_prime_len_;
   }
 
-  void LazyInitModSwitchHelper(const Options &options);
+  void LazyInitModSwitchHelper(const BatchMatMulOptions &options);
 
-  inline uint32_t WorkingContextSize(const Options &options) const {
+  inline uint32_t WorkingContextSize(const BatchMatMulOptions &options) const {
     uint32_t target_bitlen = TotalCRTBitLen(options);
     SPU_ENFORCE(target_bitlen <= current_crt_plain_bitlen_,
                 "Call LazyExpandSEALContexts first");
@@ -154,10 +154,10 @@ struct BatchMatMul::Impl : public EnableCPRNG {
   }
 
   void EncodeArray(const NdArrayRef &array, bool need_encrypt,
-                   const Options &options, absl::Span<RLWEPt> out);
+                   const BatchMatMulOptions &options, absl::Span<RLWEPt> out);
 
   void EncodeArray(const NdArrayRef &array, bool need_encrypt,
-                   const Options &options, std::vector<RLWEPt> *out) {
+                   const BatchMatMulOptions &options, std::vector<RLWEPt> *out) {
     int64_t num_elts = array.numel();
     auto eltype = array.eltype();
     SPU_ENFORCE(num_elts > 0, "empty array");
@@ -174,23 +174,23 @@ struct BatchMatMul::Impl : public EnableCPRNG {
 
   // return the payload size (absl::Buffer)
   size_t EncryptArrayThenSend(const NdArrayRef &array, const Shape4D &dim4,
-                              const Options &options,
+                              const BatchMatMulOptions &options,
                               yacl::link::Context *conn = nullptr);
 
   // Sample random array `r` of `size` elements in the field.
   // Then compute ciphers*plains + r and response the result to the peer.
   // Return teh sampled array `r`.
   void BatchMatMulThenResponse(FieldType field, Shape4D dim4,
-                               const Options &options,
+                               const BatchMatMulOptions &options,
                                absl::Span<const RLWECt> ciphers,
                                absl::Span<const RLWEPt> plains,
                                absl::Span<const uint64_t> rnd_mask,
                                yacl::link::Context *conn = nullptr);
 
-  void PrepareRandomMask(FieldType field, int64_t size, const Options &options,
+  void PrepareRandomMask(FieldType field, int64_t size, const BatchMatMulOptions &options,
                          std::vector<uint64_t> &mask);
 
-  NdArrayRef DecryptArray(FieldType field, int64_t size, const Options &options,
+  NdArrayRef DecryptArray(FieldType field, int64_t size, const BatchMatMulOptions &options,
                           const std::vector<yacl::Buffer> &ct_array);
 
  private:
@@ -213,12 +213,12 @@ struct BatchMatMul::Impl : public EnableCPRNG {
   std::vector<std::shared_ptr<seal::PublicKey>> peer_pub_key_;
   std::vector<std::shared_ptr<seal::GaloisKeys>> peer_gal_key_;
 
-  std::unordered_map<Options, ModulusSwitchHelper> ms_helpers_;
+  std::unordered_map<BatchMatMulOptions, ModulusSwitchHelper> ms_helpers_;
 
   std::vector<std::shared_ptr<seal::Decryptor>> decryptors_;
 };
 
-void BatchMatMul::Impl::LazyInitModSwitchHelper(const Options &options) {
+void BatchMatMul::Impl::LazyInitModSwitchHelper(const BatchMatMulOptions &options) {
   if (ms_helpers_.count(options) > 0) {
     return;
   }
@@ -245,7 +245,7 @@ void BatchMatMul::Impl::LazyInitModSwitchHelper(const Options &options) {
                       ModulusSwitchHelper(crt_context, options.ring_bitlen));
 }
 
-void BatchMatMul::Impl::LazyExpandSEALContexts(const Options &options,
+void BatchMatMul::Impl::LazyExpandSEALContexts(const BatchMatMulOptions &options,
                                                yacl::link::Context *conn) {
   uint32_t target_plain_bitlen = TotalCRTBitLen(options);
   if (current_crt_plain_bitlen_ >= target_plain_bitlen) {
@@ -389,7 +389,7 @@ NdArrayRef BatchMatMul::Impl::MatMulClient(const NdArrayRef &x,
   SPU_ENFORCE(x.numel() > 0);
 
   auto field = eltype.as<Ring2k>()->field();
-  Options options;
+  BatchMatMulOptions options;
   options.ring_bitlen = SizeOf(field) * 8;
   options.msg_bitlen =
       msg_width_hint == 0 ? options.ring_bitlen : msg_width_hint;
@@ -449,7 +449,7 @@ NdArrayRef BatchMatMul::Impl::MatMulServer(
   // SPU_ENFORCE(x.numel() > 0);
 
   auto field = eltype.as<Ring2k>()->field();
-  Options options;
+  BatchMatMulOptions options;
   options.ring_bitlen = SizeOf(field) * 8;
   options.msg_bitlen =
       msg_width_hint == 0 ? options.ring_bitlen : msg_width_hint;
@@ -521,7 +521,7 @@ NdArrayRef BatchMatMul::Impl::MatMulServer(
 
 size_t BatchMatMul::Impl::EncryptArrayThenSend(const NdArrayRef &array,
                                                const Shape4D &dim4,
-                                               const Options &options,
+                                               const BatchMatMulOptions &options,
                                                yacl::link::Context *conn) {
   int64_t num_elts = array.numel();
   auto eltype = array.eltype();
@@ -562,7 +562,7 @@ size_t BatchMatMul::Impl::EncryptArrayThenSend(const NdArrayRef &array,
 }
 
 void BatchMatMul::Impl::PrepareRandomMask(FieldType field, int64_t size,
-                                          const Options &options,
+                                          const BatchMatMulOptions &options,
                                           std::vector<uint64_t> &mask) {
   const int64_t num_splits = CeilDiv(size, num_slots());
   const int64_t num_seal_ctx = WorkingContextSize(options);
@@ -588,7 +588,7 @@ void BatchMatMul::Impl::PrepareRandomMask(FieldType field, int64_t size,
 }
 
 void BatchMatMul::Impl::EncodeArray(const NdArrayRef &array, bool need_encrypt,
-                                    const Options &options,
+                                    const BatchMatMulOptions &options,
                                     absl::Span<RLWEPt> out) {
   int64_t num_elts = array.numel();
   auto eltype = array.eltype();
@@ -642,7 +642,7 @@ void BatchMatMul::Impl::EncodeArray(const NdArrayRef &array, bool need_encrypt,
 }
 
 void BatchMatMul::Impl::BatchMatMulThenResponse(
-    FieldType, Shape4D dim4, const Options &options,
+    FieldType, Shape4D dim4, const BatchMatMulOptions &options,
     absl::Span<const RLWECt> ciphers, absl::Span<const RLWEPt> plains,
     absl::Span<const uint64_t> rnd_mask, yacl::link::Context *conn) {
   SIMDBatchMMProt::Meta meta;
@@ -719,7 +719,7 @@ void BatchMatMul::Impl::BatchMatMulThenResponse(
 }
 
 NdArrayRef BatchMatMul::Impl::DecryptArray(
-    FieldType field, int64_t size, const Options &options,
+    FieldType field, int64_t size, const BatchMatMulOptions &options,
     const std::vector<yacl::Buffer> &ct_array) {
   const int64_t num_splits = CeilDiv(size, num_slots());
   const int64_t num_seal_ctx = WorkingContextSize(options);

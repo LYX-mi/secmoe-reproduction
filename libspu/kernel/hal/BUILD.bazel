@@ -206,6 +206,20 @@ spu_cc_test(
 )
 
 spu_cc_test(
+    name = "batch_matmul_test",
+    srcs = ["batch_matmul_test.cc"],
+    deps = [
+        ":constants",
+        ":polymorphic",
+        ":prot_wrapper",
+        ":public_helper",
+        "//libspu/core:context",
+        "//libspu/kernel:test_util",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
+
+spu_cc_test(
     name = "array_element_wise_test",
     srcs = ["array_element_wise_test.cc"],
     deps = [
