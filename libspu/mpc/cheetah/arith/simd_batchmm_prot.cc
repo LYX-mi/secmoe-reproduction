@@ -374,7 +374,7 @@ NdArrayRef SIMDBatchMMProt::PrepareWeightVector(const Meta& meta, Shape2D in_sha
   const auto field = eltype.as<Ring2k>()->field();
   NdArrayRef weight_vec;
 
-  DISPATCH_ALL_FIELDS(field, [&]() {
+  DISPATCH_ALL_FIELDS(field, "_", [&]() {
     using uT = std::make_unsigned<ring2k_t>::type;
     if ((uint64_t)in_shape[0] <= row_size_) { 
       size_t baby_step = absl::bit_ceil(
@@ -517,7 +517,7 @@ NdArrayRef SIMDBatchMMProt::PrepareInputVector(const Meta& meta, Shape2D in_shap
   const auto field = eltype.as<Ring2k>()->field();
   NdArrayRef input_vec = ring_zeros(field, {static_cast<int64_t>(input_groups * number_blocks * simd_lane_)});
 
-  DISPATCH_ALL_FIELDS(field, [&]() {
+  DISPATCH_ALL_FIELDS(field, "_", [&]() {
     using uT = std::make_unsigned<ring2k_t>::type;
 
     yacl::parallel_for(0, input_groups, [&](uint64_t bgn, uint64_t end) {
@@ -631,7 +631,7 @@ NdArrayRef SIMDBatchMMProt::ParseResult(const Meta& meta, Shape2D in_shape,
   NdArrayRef res_mat = ring_zeros(eltype.as<Ring2k>()->field(),
                                   {static_cast<int64_t>(meta.batch * meta.dims[0] * meta.dims[2])});
 
-  DISPATCH_ALL_FIELDS(eltype.as<Ring2k>()->field(), [&]() {
+  DISPATCH_ALL_FIELDS(eltype.as<Ring2k>()->field(), "_", [&]() {
     using uT = std::make_unsigned<ring2k_t>::type;
 
     if ((size_t)in_shape[0] <= row_size_) { 

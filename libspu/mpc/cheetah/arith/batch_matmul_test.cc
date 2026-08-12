@@ -97,7 +97,7 @@ TEST_P(BatchMatMulTest, Basic) {
   EXPECT_EQ(expected.numel(), computed.numel());
   const int64_t kMaxDiff = allow_approx ? 1 : 0;
   int64_t max_diff = 0;
-  DISPATCH_ALL_FIELDS(field, [&]() {
+  DISPATCH_ALL_FIELDS(field, "_", [&]() {
     auto e = NdArrayView<ring2k_t>(expected);
     auto c = NdArrayView<ring2k_t>(computed);
 
