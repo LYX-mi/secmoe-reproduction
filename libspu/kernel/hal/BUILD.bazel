@@ -319,3 +319,17 @@ spu_cc_test(
         "//libspu/kernel:test_util",
     ],
 )
+
+spu_cc_test(
+    name = "cryptomoe_equal_test",
+    srcs = ["cryptomoe_equal_test.cc"],
+    deps = [
+        ":constants",
+        ":polymorphic",
+        ":prot_wrapper",
+        ":public_helper",
+        "//libspu/core:context",
+        "//libspu/kernel:test_util",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
