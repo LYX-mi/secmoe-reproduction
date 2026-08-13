@@ -348,3 +348,16 @@ spu_cc_test(
         "//libspu/kernel:test_util",
     ],
 )
+
+spu_cc_test(
+    name = "cryptomoe_topk_test",
+    srcs = ["cryptomoe_topk_test.cc"],
+    deps = [
+        ":rank",
+        "//libspu/core:context",
+        "//libspu/kernel/hal:prot_wrapper",
+        "//libspu/kernel/hal:public_helper",
+        "//libspu/kernel:test_util",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
