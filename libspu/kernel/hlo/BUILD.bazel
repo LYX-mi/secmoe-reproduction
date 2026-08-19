@@ -349,12 +349,34 @@ spu_cc_test(
     ],
 )
 
+
+spu_cc_test(
+    name = "cryptomoe_dispatch_test",
+    srcs = ["cryptomoe_dispatch_test.cc"],
+    deps = [
+        ":rank",
+        "//libspu/core:context",
+        "//libspu/kernel/hal:constants",
+        "//libspu/kernel/hal:polymorphic",
+        "//libspu/kernel/hal:prot_wrapper",
+        "//libspu/kernel/hal:public_helper",
+        "//libspu/kernel/hal:ring",
+        "//libspu/kernel/hal:shape_ops",
+        "//libspu/kernel:test_util",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
+
 spu_cc_test(
     name = "cryptomoe_topk_test",
     srcs = ["cryptomoe_topk_test.cc"],
     deps = [
         ":rank",
         "//libspu/core:context",
+        "//libspu/kernel/hal:constants",
+        "//libspu/kernel/hal:polymorphic",
+        "//libspu/kernel/hal:ring",
+        "//libspu/kernel/hal:shape_ops",
         "//libspu/kernel/hal:prot_wrapper",
         "//libspu/kernel/hal:public_helper",
         "//libspu/kernel:test_util",
