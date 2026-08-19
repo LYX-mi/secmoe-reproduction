@@ -188,12 +188,11 @@ void CompSwapSingle(SPUContext *ctx, const CompFn &comparator_body,
   // const auto num_operands = arr.size();
   std::vector<Value> values;
 
+  // CipherGPT strict key: (score, original_index).
   values.emplace_back(slice_scalar_at(ctx, arr[0], {lo}));
   values.emplace_back(slice_scalar_at(ctx, arr[0], {hi}));
-  if (config.confusion) {
-    values.emplace_back(slice_scalar_at(ctx, arr[1], {lo}));
-    values.emplace_back(slice_scalar_at(ctx, arr[1], {hi}));
-  }
+  values.emplace_back(slice_scalar_at(ctx, arr[1], {lo}));
+  values.emplace_back(slice_scalar_at(ctx, arr[1], {hi}));
 
   auto predicate = comparator_body(values);
   auto _predicate = getBooleanValue(ctx, hal::reveal(ctx, predicate));
@@ -215,23 +214,24 @@ void TwoWayPartition(SPUContext *ctx, const CompFn &comparator_body,
                      absl::Span<spu::Value> arr, int64_t lo, int64_t hi,
                      const TopKConfig &config,
                      std::vector<std::pair<int64_t, int64_t>> &intervals) {
-  // Just use first element as pivot, so left=lo+1
+  // CipherGPT Algorithm 2 chooses the last element as pivot.
+  // The existing partition code uses arr[lo] as pivot, so move arr[hi]
+  // to lo before partitioning.
+  Swap(arr, {lo}, {hi});
   auto left = lo + 1;
   auto right = hi;
 
   // collect and do comparison once
   // const auto num_operands = arr.size();
   std::vector<Value> values;
-  // arr contains: value, random_value, index
-  // values: pivot_value, rest_value, pivot_rand, rest_rand
+  // arr contains: score, original_index.
+  // values: pivot_score, rest_score, pivot_index, rest_index.
   values.push_back(broadcast_to(ctx, slice_scalar_at(ctx, arr[0], {lo}),
                                 {right - left + 1}));
   values.push_back(slice(ctx, arr[0], {left}, {right + 1}));
-  if (config.confusion) {
-    values.push_back(broadcast_to(ctx, slice_scalar_at(ctx, arr[1], {lo}),
-                                  {right - left + 1}));
-    values.push_back(slice(ctx, arr[1], {left}, {right + 1}));
-  }
+  values.push_back(broadcast_to(ctx, slice_scalar_at(ctx, arr[1], {lo}),
+                                {right - left + 1}));
+  values.push_back(slice(ctx, arr[1], {left}, {right + 1}));
 
   auto predicate = comparator_body(values);
   auto _predicate = dump_public_as<bool>(ctx, hal::reveal(ctx, predicate));
@@ -314,37 +314,65 @@ std::vector<spu::Value> QuickSelectTopk(SPUContext *ctx,
   return out;
 }
 
-std::vector<spu::Value> PrepareInput(SPUContext *ctx, const Value &input,
-                                     const TopKConfig &config) {
-  std::vector<spu::Value> inp;
+std::vector<spu::Value> PrepareInput(SPUContext *ctx,
+                                     const Value &input,
+                                     const TopKConfig &) {
+  auto dt =
+      ctx->config().field() == FieldType::FM32 ? spu::DT_I32 : spu::DT_I64;
 
-  // shuffle with random permutation to break link of values
-  auto rand_perm = _rand_perm_s(ctx, input.shape());
-  inp.push_back(_perm_ss(ctx, input, rand_perm).setDtype(input.dtype()));
+  // CipherGPT: append the original position so every TopK element is
+  // strictly comparable. The same index is also CryptoMoE's K_i payload.
+  auto index =
+      _p2s(ctx, hal::iota(ctx, dt, input.numel())).setDtype(dt);
 
-  // we concate random value to hide the data-dependant running pattern
-  // for quick select;
-  // consider an extreme case where all values are identical, two-way partition
-  // will run very slowly. If running multiple times and finding that it
-  // consistently takes a long time, it can be reasonably inferred that there is
-  // a significant amount of duplicate data in the original dataset. However,
-  // with the addition of randomness, we can essentially assume that all data
-  // points are unique, which would lead to a more stable runtime.
-  if (config.confusion) {
-    inp.push_back(hal::random(ctx, Visibility::VIS_SECRET, DataType::DT_F64,
-                              input.shape()));
+  if (ctx->hasKernel("rand_perm_m") && ctx->hasKernel("perm_am")) {
+    // CipherGPT FShuffle: score and original index must be shuffled by
+    // exactly the same secret permutation.
+    auto rand_perm = _rand_perm_s(ctx, input.shape());
+    return {
+        _perm_ss(ctx, input, rand_perm).setDtype(input.dtype()),
+        _perm_ss(ctx, index, rand_perm).setDtype(dt),
+    };
   }
 
-  if (!config.value_only) {
-    auto dt =
-        ctx->config().field() == FieldType::FM32 ? spu::DT_I32 : spu::DT_I64;
-    // shuffle index with the same permutation as values
-    inp.push_back(
-        _perm_ss(ctx, _p2s(ctx, hal::iota(ctx, dt, input.numel())), rand_perm)
-            .setDtype(dt));
-  }
+  // Protocols without rand_perm_m/perm_am realize FShuffle
+  // obliviously using secret random shuffle keys. These keys are used
+  // ONLY for FShuffle and are discarded before TopK comparison.
+  auto key0 =
+      hal::random(ctx, Visibility::VIS_SECRET, dt, input.shape());
+  auto key1 =
+      hal::random(ctx, Visibility::VIS_SECRET, dt, input.shape());
 
-  return inp;
+  std::vector<spu::Value> shuffle_input = {
+      key0,
+      key1,
+      input,
+      index,
+  };
+
+  hal::CompFn shuffle_cmp =
+      [ctx](absl::Span<const spu::Value> values) -> spu::Value {
+    auto key0_lt = hal::less(ctx, values[0], values[1]);
+    auto key0_eq = hal::equal(ctx, values[0], values[1]);
+    auto key1_lt = hal::less(ctx, values[2], values[3]);
+
+    return hal::bitwise_or(
+        ctx,
+        key0_lt,
+        hal::bitwise_and(ctx, key0_eq, key1_lt));
+  };
+
+  auto shuffled =
+      hal::sort1d(ctx,
+                  absl::MakeSpan(shuffle_input),
+                  shuffle_cmp,
+                  VIS_SECRET,
+                  false);
+
+  return {
+      shuffled[2].setDtype(input.dtype()),
+      shuffled[3].setDtype(dt),
+  };
 }
 
 // Ref: https://eprint.iacr.org/2019/695.pdf
@@ -1222,57 +1250,39 @@ std::vector<Value> topk_1d(SPUContext *ctx, const spu::Value &input,
     return ret;
   }
 
-  if (ctx->hasKernel("rand_perm_m") && ctx->hasKernel("perm_am")) {
-    auto inp = internal::PrepareInput(ctx, input, config);
+  auto inp = internal::PrepareInput(ctx, input, config);
 
-    hal::CompFn comp_fn =
-        [ctx, &scalar_cmp](absl::Span<const spu::Value> values) -> spu::Value {
-      auto cmp = scalar_cmp(ctx, values[0], values[1]);
-      if (values.size() == 2) {
-        return cmp;
-      }
-      // equal has better performance for aby3
-      // cmp+andbb has better performance for semi2k
-      auto eq = hal::equal(ctx, values[0], values[1]);
+  // CipherGPT strict lexicographic order:
+  //
+  //   score_lhs > score_rhs
+  //     OR
+  //   (score_lhs == score_rhs AND index_lhs > index_rhs)
+  //
+  // No random tie-breaking value participates in TopK ordering.
+  hal::CompFn comp_fn =
+      [ctx, &scalar_cmp](
+          absl::Span<const spu::Value> values) -> spu::Value {
+    SPU_ENFORCE(
+        values.size() == 4,
+        "CipherGPT TopK expects (score,index) operands");
 
-      // comparision of random value
-      auto result = scalar_cmp(ctx, values[2], values[3]);
-      result = hal::bitwise_and(ctx, eq, result);
-      result = hal::bitwise_or(ctx, cmp, result);
-      return result;
-    };
+    auto score_cmp =
+        scalar_cmp(ctx, values[0], values[1]);
 
-    return internal::QuickSelectTopk(ctx, comp_fn, absl::MakeSpan(inp), config);
+    auto score_eq =
+        hal::equal(ctx, values[0], values[1]);
 
-  } else {
-    // fall back to general sort
-    SPDLOG_WARN(
-        "Fallback to generic topk (using sort) because permutation-related "
-        "kernels are not supported");
+    auto index_cmp =
+        scalar_cmp(ctx, values[2], values[3]);
 
-    auto dt =
-        ctx->config().field() == FieldType::FM32 ? spu::DT_I32 : spu::DT_I64;
-    std::vector<spu::Value> inp;
+    auto tie_cmp =
+        hal::bitwise_and(ctx, score_eq, index_cmp);
 
-    inp.push_back(input);
-    if (!config.value_only) {
-      inp.push_back(_p2s(ctx, hal::iota(ctx, dt, input.numel())).setDtype(dt));
-    }
+    return hal::bitwise_or(ctx, score_cmp, tie_cmp);
+  };
 
-    hal::CompFn comp_fn =
-        [ctx, &scalar_cmp](absl::Span<const spu::Value> values) -> spu::Value {
-      // single key with extra payload
-      return scalar_cmp(ctx, values[0], values[1]);
-    };
-    auto sorted =
-        hal::sort1d(ctx, absl::MakeSpan(inp), comp_fn, VIS_SECRET, false);
-
-    for (auto &item : sorted) {
-      item = slice(ctx, item, {0}, {config.k_hi});
-    }
-
-    return sorted;
-  }
+  return internal::QuickSelectTopk(
+      ctx, comp_fn, absl::MakeSpan(inp), config);
 }
 
 }  // namespace spu::kernel::hal

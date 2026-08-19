@@ -101,7 +101,7 @@ std::vector<spu::Value> TopK(SPUContext *ctx, const spu::Value &input,
     }
   };
 
-  hal::TopKConfig config = {value_only, false, k_lo, k_hi};
+  hal::TopKConfig config = {value_only, k_lo, k_hi};
 
   auto topk_fn = [&](const spu::Value &input) {
     return hal::topk_1d(ctx, input, scalar_cmp_fn, config);

@@ -195,6 +195,47 @@ struct EmpFerretOt::Impl {
   }
 
  public:
+  void RawSendRCOT(absl::Span<uint128_t> output) {
+    SPU_ENFORCE(is_sender_);
+    SPU_ENFORCE(!output.empty());
+
+    static_assert(sizeof(OtBaseTyp) == sizeof(uint128_t));
+
+    std::vector<OtBaseTyp> raw(output.size());
+    RandCOT(absl::MakeSpan(raw));
+
+    std::memcpy(output.data(), raw.data(),
+                raw.size() * sizeof(OtBaseTyp));
+  }
+
+  void RawRecvRCOT(absl::Span<uint128_t> output,
+                   absl::Span<uint8_t> choices) {
+    SPU_ENFORCE(!is_sender_);
+    SPU_ENFORCE(!output.empty());
+    SPU_ENFORCE_EQ(output.size(), choices.size());
+
+    static_assert(sizeof(OtBaseTyp) == sizeof(uint128_t));
+
+    std::vector<OtBaseTyp> raw(output.size());
+    RandCOT(absl::MakeSpan(raw));
+
+    for (size_t i = 0; i < raw.size(); ++i) {
+      choices[i] = emp::getLSB(raw[i]);
+    }
+
+    std::memcpy(output.data(), raw.data(),
+                raw.size() * sizeof(OtBaseTyp));
+  }
+
+  uint128_t RawGetDelta() const {
+    SPU_ENFORCE(is_sender_);
+    static_assert(sizeof(OtBaseTyp) == sizeof(uint128_t));
+
+    uint128_t delta = 0;
+    std::memcpy(&delta, &ferret_->Delta, sizeof(delta));
+    return delta;
+  }
+
   Impl(std::shared_ptr<Communicator> conn, bool is_sender, bool malicious)
       : is_sender_(is_sender) {
     SPU_ENFORCE(conn != nullptr);
@@ -944,6 +985,19 @@ int EmpFerretOt::Rank() const { return impl_->Rank(); }
 void EmpFerretOt::Flush() { impl_->Flush(); }
 
 EmpFerretOt::~EmpFerretOt() { impl_->Flush(); }
+
+void EmpFerretOt::SendRCOT(absl::Span<uint128_t> output) {
+  impl_->RawSendRCOT(output);
+}
+
+void EmpFerretOt::RecvRCOT(absl::Span<uint128_t> output,
+                           absl::Span<uint8_t> choices) {
+  impl_->RawRecvRCOT(output, choices);
+}
+
+uint128_t EmpFerretOt::GetDelta() const {
+  return impl_->RawGetDelta();
+}
 
 template <typename T>
 size_t CheckBitWidth(size_t bw) {

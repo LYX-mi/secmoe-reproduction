@@ -23,6 +23,7 @@
 #include "libspu/mpc/cheetah/arithmetic.h"
 #include "libspu/mpc/cheetah/boolean.h"
 #include "libspu/mpc/cheetah/conversion.h"
+#include "libspu/mpc/cheetah/permute.h"
 #include "libspu/mpc/cheetah/state.h"
 #include "libspu/mpc/cheetah/type.h"
 #include "libspu/mpc/common/pv2k.h"
@@ -85,7 +86,7 @@ void regCheetahProtocol(SPUContext* ctx,
                   cheetah::CommonTypeB, cheetah::CommonTypeV,               //
                   cheetah::CastTypeB, cheetah::AndBP, cheetah::AndBB,       //
                   cheetah::XorBP, cheetah::XorBB,                           //
-                  cheetah::RandA>();
+                  cheetah::RandA, cheetah::RandPermM, cheetah::PermAM>();
 }
 
 std::unique_ptr<SPUContext> makeCheetahProtocol(

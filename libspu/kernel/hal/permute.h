@@ -26,7 +26,6 @@ namespace spu::kernel::hal {
 
 struct TopKConfig {
   bool value_only;  // only return values
-  bool confusion;   // add random noise to hide the data-dependant pattern
   int64_t k_lo;     // the `k_lo`-th largest element order is guaranteed
   int64_t k_hi;     // returning the largest `k_hi` values (or with indices)
 };

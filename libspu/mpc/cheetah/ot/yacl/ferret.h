@@ -40,6 +40,12 @@ class YaclFerretOt : public spu::mpc::cheetah::FerretOtInterface {
 
   void Flush() override;
 
+  void SendRCOT(absl::Span<uint128_t> output) override;
+  void RecvRCOT(absl::Span<uint128_t> output,
+                absl::Span<uint8_t> choices) override;
+
+  uint128_t GetDelta() const override;
+
   // One-of-N OT where msg_array is a Nxn array.
   // choice \in [0, N-1]
   void SendCMCC(absl::Span<const uint8_t> msg_array, size_t N,

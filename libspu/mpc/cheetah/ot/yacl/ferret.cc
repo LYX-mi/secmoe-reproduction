@@ -153,6 +153,25 @@ struct YaclFerretOt::Impl {
   }
 
  public:
+  void RawSendRCOT(absl::Span<uint128_t> output) {
+    SPU_ENFORCE(is_sender_);
+    SPU_ENFORCE(!output.empty());
+    SendRCOT(output);
+  }
+
+  void RawRecvRCOT(absl::Span<uint128_t> output,
+                   absl::Span<uint8_t> choices) {
+    SPU_ENFORCE(!is_sender_);
+    SPU_ENFORCE(!output.empty());
+    SPU_ENFORCE_EQ(output.size(), choices.size());
+    RecvRCOT(choices, output);
+  }
+
+  uint128_t RawGetDelta() const {
+    SPU_ENFORCE(is_sender_);
+    return ferret_->GetDelta();
+  }
+
   Impl(std::shared_ptr<Communicator> conn, bool is_sender, bool use_soft_spoken)
       : is_sender_(is_sender) {
     SPU_ENFORCE(conn != nullptr);
@@ -864,6 +883,19 @@ int YaclFerretOt::Rank() const { return impl_->Rank(); }
 void YaclFerretOt::Flush() { impl_->Flush(); }
 
 YaclFerretOt::~YaclFerretOt() { impl_->Flush(); }
+
+void YaclFerretOt::SendRCOT(absl::Span<uint128_t> output) {
+  impl_->RawSendRCOT(output);
+}
+
+void YaclFerretOt::RecvRCOT(absl::Span<uint128_t> output,
+                            absl::Span<uint8_t> choices) {
+  impl_->RawRecvRCOT(output, choices);
+}
+
+uint128_t YaclFerretOt::GetDelta() const {
+  return impl_->RawGetDelta();
+}
 
 template <typename T>
 size_t CheckBitWidth(size_t bw) {

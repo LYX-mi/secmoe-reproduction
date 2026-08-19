@@ -62,6 +62,23 @@ class BShrTy : public TypeImpl<BShrTy, RingTy, Secret, BShare> {
   }
 };
 
+// A private permutation share.
+//
+// In the 2PC Secret-Shared Shuffle construction each party independently
+// samples a private permutation. PShare represents that party-local
+// permutation without revealing it to the peer.
+class PShrTy : public TypeImpl<PShrTy, RingTy, Secret, PShare> {
+  using Base = TypeImpl<PShrTy, RingTy, Secret, PShare>;
+
+ public:
+  using Base::Base;
+
+  static std::string_view getStaticId() { return "cheetah.PShr"; }
+
+  // Permutations are represented by uint64 indices.
+  explicit PShrTy() { field_ = FieldType::FM64; }
+};
+
 void registerTypes();
 
 }  // namespace spu::mpc::cheetah

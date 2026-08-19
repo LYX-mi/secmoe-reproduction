@@ -116,5 +116,91 @@ TEST(CryptoMoETopKTest, FM64) {
   RunCryptoMoETopKTest(FieldType::FM64);
 }
 
+void RunCryptoMoETopKStrictTieTest(FieldType field) {
+  // CipherGPT requires TopK elements to be strictly comparable by
+  // appending the original index.
+  //
+  // Three candidates have exactly the same score 0.6:
+  //
+  //   score: [0, 0.6, 0, 0.6, 0, 0.6]
+  //   index:  0    1  2    3  4    5
+  //
+  // With descending lexicographic (score,index), Top-2 must select
+  // original indices {5, 3}, excluding index 1.
+  const xt::xarray<float> priority_scores = {
+      0.0F, 0.6F, 0.0F, 0.6F, 0.0F, 0.6F,
+  };
+
+  mpc::utils::simulate(
+      2, [&](const std::shared_ptr<yacl::link::Context>& lctx) {
+        SPUContext ctx =
+            test::makeSPUContext(ProtocolKind::CHEETAH, field, lctx);
+
+        auto scores_s =
+            test::makeValue(&ctx, priority_scores, VIS_SECRET);
+
+        auto scores_p =
+            test::makeValue(&ctx, priority_scores, VIS_PUBLIC);
+        auto quantized_scores =
+            hal::dump_public_as<float>(&ctx, scores_p);
+
+        auto out = TopK(&ctx, scores_s, 2);
+
+        ASSERT_EQ(out.size(), 2U);
+        EXPECT_TRUE(out[0].isSecret());
+        EXPECT_TRUE(out[1].isSecret());
+
+        auto selected_scores =
+            hal::dump_public_as<float>(
+                &ctx, hal::reveal(&ctx, out[0]));
+
+        ASSERT_EQ(selected_scores.size(), 2U);
+        EXPECT_FLOAT_EQ(selected_scores(0), quantized_scores(1));
+        EXPECT_FLOAT_EQ(selected_scores(1), quantized_scores(1));
+
+        int64_t idx0 = -1;
+        int64_t idx1 = -1;
+
+        auto indices_p = hal::reveal(&ctx, out[1]);
+
+        if (field == FieldType::FM32) {
+          EXPECT_EQ(out[1].dtype(), DT_I32);
+
+          auto indices =
+              hal::dump_public_as<int32_t>(&ctx, indices_p);
+
+          ASSERT_EQ(indices.size(), 2U);
+          idx0 = indices(0);
+          idx1 = indices(1);
+        } else {
+          EXPECT_EQ(out[1].dtype(), DT_I64);
+
+          auto indices =
+              hal::dump_public_as<int64_t>(&ctx, indices_p);
+
+          ASSERT_EQ(indices.size(), 2U);
+          idx0 = indices(0);
+          idx1 = indices(1);
+        }
+
+        // QuickSelect need not return the selected set in sorted order,
+        // so verify the set rather than its output ordering.
+        EXPECT_TRUE(
+            (idx0 == 5 && idx1 == 3) ||
+            (idx0 == 3 && idx1 == 5));
+
+        EXPECT_NE(idx0, 1);
+        EXPECT_NE(idx1, 1);
+      });
+}
+
+TEST(CryptoMoETopKTest, StrictScoreIndexTieFM32) {
+  RunCryptoMoETopKStrictTieTest(FieldType::FM32);
+}
+
+TEST(CryptoMoETopKTest, StrictScoreIndexTieFM64) {
+  RunCryptoMoETopKStrictTieTest(FieldType::FM64);
+}
+
 }  // namespace
 }  // namespace spu::kernel::hlo

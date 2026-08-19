@@ -41,6 +41,50 @@ absl::Span<const T> makeConstSpan(NdArrayView<T> a) {
   return {&a[0], (size_t)a.numel()};
 }
 
+TEST(FerretRawRCOTTest, RawCorrelation) {
+  constexpr size_t kWorldSize = 2;
+  constexpr size_t kNumOts = 64;
+
+  // Test both YACL Ferret and Softspoken-backed implementations.
+  for (bool use_ss : {false, true}) {
+    std::vector<uint128_t> sender(kNumOts);
+    std::vector<uint128_t> receiver(kNumOts);
+    std::vector<uint8_t> choices(kNumOts);
+    uint128_t delta = 0;
+
+    utils::simulate(
+        kWorldSize,
+        [&](std::shared_ptr<yacl::link::Context> ctx) {
+          auto conn = std::make_shared<Communicator>(ctx);
+          const int rank = ctx->Rank();
+
+          YaclFerretOt ferret(conn, rank == 0, use_ss);
+
+          if (rank == 0) {
+            ferret.SendRCOT(absl::MakeSpan(sender));
+            delta = ferret.GetDelta();
+            ferret.Flush();
+          } else {
+            ferret.RecvRCOT(
+                absl::MakeSpan(receiver),
+                absl::MakeSpan(choices));
+          }
+        });
+
+    for (size_t i = 0; i < kNumOts; ++i) {
+      EXPECT_LT(choices[i], 2)
+          << "use_ss=" << use_ss << ", i=" << i;
+
+      const uint128_t expected =
+          sender[i] ^ (choices[i] ? delta : uint128_t{0});
+
+      EXPECT_TRUE(receiver[i] == expected)
+          << "raw RCOT mismatch: use_ss="
+          << use_ss << ", i=" << i;
+    }
+  }
+}
+
 TEST_P(FerretCOTTest, ChosenCorrelationChosenChoice) {
   size_t kWorldSize = 2;
   int64_t n = 10;
