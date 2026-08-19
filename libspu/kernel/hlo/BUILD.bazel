@@ -219,6 +219,20 @@ spu_cc_library(
 )
 
 spu_cc_library(
+    name = "cryptomoe_dispatch",
+    srcs = ["cryptomoe_dispatch.cc"],
+    hdrs = ["cryptomoe_dispatch.h"],
+    deps = [
+        ":rank",
+        "//libspu/core:context",
+        "//libspu/kernel/hal:constants",
+        "//libspu/kernel/hal:polymorphic",
+        "//libspu/kernel/hal:ring",
+        "//libspu/kernel/hal:shape_ops",
+    ],
+)
+
+spu_cc_library(
     name = "rank",
     srcs = ["rank.cc"],
     hdrs = ["rank.h"],
@@ -354,14 +368,10 @@ spu_cc_test(
     name = "cryptomoe_dispatch_test",
     srcs = ["cryptomoe_dispatch_test.cc"],
     deps = [
-        ":rank",
+        ":cryptomoe_dispatch",
         "//libspu/core:context",
-        "//libspu/kernel/hal:constants",
-        "//libspu/kernel/hal:polymorphic",
         "//libspu/kernel/hal:prot_wrapper",
         "//libspu/kernel/hal:public_helper",
-        "//libspu/kernel/hal:ring",
-        "//libspu/kernel/hal:shape_ops",
         "//libspu/kernel:test_util",
         "//libspu/mpc/utils:simulate",
     ],

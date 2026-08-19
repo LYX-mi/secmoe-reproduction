@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "libspu/kernel/hlo/rank.h"
+#include "libspu/kernel/hlo/cryptomoe_dispatch.h"
 
 #include <cstdint>
 
@@ -20,12 +20,8 @@
 #include "xtensor/xarray.hpp"
 
 #include "libspu/core/context.h"
-#include "libspu/kernel/hal/constants.h"
-#include "libspu/kernel/hal/polymorphic.h"
 #include "libspu/kernel/hal/prot_wrapper.h"
 #include "libspu/kernel/hal/public_helper.h"
-#include "libspu/kernel/hal/ring.h"
-#include "libspu/kernel/hal/shape_ops.h"
 #include "libspu/kernel/test_util.h"
 #include "libspu/mpc/utils/simulate.h"
 
@@ -67,12 +63,7 @@ void RunCryptoMoEDispatchTest(FieldType field) {
       {3.5F, 4.25F},
   };
 
-  const xt::xarray<int32_t> expert_ids = {
-      2, 2, 2, 2,
-  };
-
-  constexpr int64_t num_tokens = 2;
-  constexpr int64_t routed_experts_per_token = 2;
+  constexpr int64_t expert_id = 2;
   constexpr int64_t capacity = 1;
 
   mpc::utils::simulate(
@@ -91,108 +82,11 @@ void RunCryptoMoEDispatchTest(FieldType field) {
         ASSERT_TRUE(routing_weights_s.isSecret());
         ASSERT_TRUE(tokens_s.isSecret());
 
-        // CryptoMoE Algorithm 1, line 2:
-        // Flatten K and W from [m, k] to [m*k].
-        auto k_flat_s =
-            hal::reshape(&ctx, routing_indices_s,
-                         {num_tokens * routed_experts_per_token});
-        auto w_flat_s =
-            hal::reshape(&ctx, routing_weights_s,
-                         {num_tokens * routed_experts_per_token});
-
-        auto expert_ids_p =
-            hal::constant(&ctx, expert_ids, DT_I32);
-
-        // CryptoMoE Algorithm 1, line 3:
-        // [[M_i]]^B = Pi_equal([[K]], i).
-        auto mask_s =
-            hal::equal(&ctx, k_flat_s, expert_ids_p);
-
-        ASSERT_TRUE(mask_s.isSecret());
-        ASSERT_EQ(mask_s.dtype(), DT_I1);
-
-        // CryptoMoE Algorithm 1, line 4:
-        // [[S_i]] = Pi_mux([[M_i]]^B, [[W]]).
-        auto zero_p =
-            hal::zeros(&ctx, DT_F32,
-                       {num_tokens * routed_experts_per_token});
-
-        auto scores_s =
-            hal::select(&ctx, mask_s, w_flat_s, zero_p);
-
-        ASSERT_TRUE(scores_s.isSecret());
-        ASSERT_EQ(scores_s.dtype(), DT_F32);
-
-        // CryptoMoE Algorithm 1, line 5:
-        // [[K_i]], [[S'_i]] = Pi_topk([[S_i]], t).
-        auto topk_out =
-            TopK(&ctx, scores_s, capacity);
-
-        ASSERT_EQ(topk_out.size(), 2U);
-
-        auto selected_scores_s = topk_out[0];
-        auto selected_indices_s = topk_out[1];
-
-        ASSERT_TRUE(selected_scores_s.isSecret());
-        ASSERT_TRUE(selected_indices_s.isSecret());
-
-        // CryptoMoE Algorithm 1, line 6:
-        // [[K'_i]] = [[K_i]] // k.
-        auto token_indices_s = [&]() {
-          if (field == FieldType::FM32) {
-            const xt::xarray<int32_t> k = {
-                static_cast<int32_t>(routed_experts_per_token)};
-            auto k_p =
-                test::makeValue(&ctx, k, VIS_PUBLIC);
-            return hal::div(&ctx, selected_indices_s, k_p);
-          }
-
-          const xt::xarray<int64_t> k = {
-              routed_experts_per_token};
-          auto k_p =
-              test::makeValue(&ctx, k, VIS_PUBLIC);
-          return hal::div(&ctx, selected_indices_s, k_p);
-        }();
-
-        ASSERT_TRUE(token_indices_s.isSecret());
-
-        // CryptoMoE Algorithm 1, line 7:
-        // [[O_i]] = Pi_onehot([[K'_i]], m).
-        //
-        // Pi_onehot is the paper-defined batch of Pi_equal calls.
-        auto token_candidates_p =
-            hal::iota(&ctx, selected_indices_s.dtype(), num_tokens);
-
-        auto token_indices_matrix_s =
-            hal::broadcast_to(&ctx, token_indices_s,
-                              {capacity, num_tokens}, {0});
-
-        auto token_candidates_matrix_p =
-            hal::broadcast_to(&ctx, token_candidates_p,
-                              {capacity, num_tokens}, {1});
-
-        auto onehot_s =
-            hal::equal(&ctx, token_indices_matrix_s,
-                       token_candidates_matrix_p);
-
-        ASSERT_TRUE(onehot_s.isSecret());
-        ASSERT_EQ(onehot_s.dtype(), DT_I1);
-        ASSERT_EQ(onehot_s.shape(), Shape({capacity, num_tokens}));
-
-        // CryptoMoE Algorithm 1, line 8:
-        // [[X_i]] = [[O_i]] * [[x]].
-        //
-        // Pi_equal produces Boolean shares. Convert the 0/1 one-hot matrix
-        // to arithmetic sharing, then use Cheetah's secret-secret MatMul,
-        // whose cross terms are evaluated through DotOLE.
-        auto onehot_a =
-            hal::_prefer_a(&ctx, onehot_s);
-
-        ASSERT_TRUE(onehot_a.isSecret());
-        ASSERT_EQ(onehot_a.dtype(), DT_I1);
-
+        // CryptoMoE Algorithm 1, lines 2-8.
+        // No intermediate value is revealed inside CryptoMoEDispatch.
         auto dispatched_tokens_s =
-            hal::matmul(&ctx, onehot_a, tokens_s);
+            CryptoMoEDispatch(&ctx, routing_indices_s, routing_weights_s,
+                              tokens_s, expert_id, capacity);
 
         ASSERT_TRUE(dispatched_tokens_s.isSecret());
         ASSERT_EQ(dispatched_tokens_s.dtype(), DT_F32);
