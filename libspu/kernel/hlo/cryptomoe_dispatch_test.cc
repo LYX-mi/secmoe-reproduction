@@ -110,6 +110,30 @@ void RunCryptoMoEDispatchTest(FieldType field) {
 
         EXPECT_FLOAT_EQ(got(0, 0), quantized_tokens(1, 0));
         EXPECT_FLOAT_EQ(got(0, 1), quantized_tokens(1, 1));
+
+        // CryptoMoE Algorithm 1, line 1: dispatch to every expert.
+        auto dispatched_all_s =
+            CryptoMoEDispatchAll(&ctx, routing_indices_s, routing_weights_s,
+                                 tokens_s, 3, capacity);
+
+        ASSERT_EQ(dispatched_all_s.size(), 3U);
+
+        for (int64_t expert = 0; expert < 3; ++expert) {
+          ASSERT_TRUE(dispatched_all_s[expert].isSecret());
+          ASSERT_EQ(dispatched_all_s[expert].dtype(), DT_F32);
+          ASSERT_EQ(dispatched_all_s[expert].shape(), Shape({capacity, 2}));
+
+          auto dispatched_p =
+              hal::_s2p(&ctx, dispatched_all_s[expert]).setDtype(DT_F32);
+          auto dispatched =
+              hal::dump_public_as<float>(&ctx, dispatched_p);
+
+          const int64_t expected_token = expert == 0 ? 0 : 1;
+          EXPECT_FLOAT_EQ(dispatched(0, 0),
+                          quantized_tokens(expected_token, 0));
+          EXPECT_FLOAT_EQ(dispatched(0, 1),
+                          quantized_tokens(expected_token, 1));
+        }
       });
 }
 

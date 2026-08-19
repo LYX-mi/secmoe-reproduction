@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "libspu/core/context.h"
 #include "libspu/core/value.h"
@@ -35,5 +36,14 @@ spu::Value CryptoMoEDispatch(SPUContext* ctx,
                              const spu::Value& routing_weights,
                              const spu::Value& tokens, int64_t expert_id,
                              int64_t capacity);
+
+// CryptoMoE Algorithm 1, line 1: dispatch tokens to every expert.
+//
+// Returns one secret [t, d] dispatched token matrix for each expert,
+// ordered by expert id in [0, num_experts).
+std::vector<spu::Value> CryptoMoEDispatchAll(
+    SPUContext* ctx, const spu::Value& routing_indices,
+    const spu::Value& routing_weights, const spu::Value& tokens,
+    int64_t num_experts, int64_t capacity);
 
 }  // namespace spu::kernel::hlo

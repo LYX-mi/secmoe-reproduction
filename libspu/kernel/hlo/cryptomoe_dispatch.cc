@@ -135,4 +135,23 @@ spu::Value CryptoMoEDispatch(SPUContext* ctx,
   return hal::matmul(ctx, onehot_a, tokens);
 }
 
+std::vector<spu::Value> CryptoMoEDispatchAll(
+    SPUContext* ctx, const spu::Value& routing_indices,
+    const spu::Value& routing_weights, const spu::Value& tokens,
+    int64_t num_experts, int64_t capacity) {
+  SPU_ENFORCE(num_experts > 0,
+              "num_experts must be positive, got {}", num_experts);
+
+  std::vector<spu::Value> dispatched;
+  dispatched.reserve(num_experts);
+
+  // Algorithm 1, line 1: dispatch independently for every expert.
+  for (int64_t expert_id = 0; expert_id < num_experts; ++expert_id) {
+    dispatched.push_back(CryptoMoEDispatch(
+        ctx, routing_indices, routing_weights, tokens, expert_id, capacity));
+  }
+
+  return dispatched;
+}
+
 }  // namespace spu::kernel::hlo
