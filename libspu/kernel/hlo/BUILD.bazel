@@ -219,6 +219,20 @@ spu_cc_library(
 )
 
 spu_cc_library(
+    name = "cryptomoe_router",
+    srcs = ["cryptomoe_router.cc"],
+    hdrs = ["cryptomoe_router.h"],
+    deps = [
+        ":rank",
+        ":reduce",
+        "//libspu/core:context",
+        "//libspu/kernel/hal/intrinsic/nn:activation",
+        "//libspu/kernel/hal:polymorphic",
+        "//libspu/kernel/hal:shape_ops",
+    ],
+)
+
+spu_cc_library(
     name = "cryptomoe_dispatch",
     srcs = ["cryptomoe_dispatch.cc"],
     hdrs = ["cryptomoe_dispatch.h"],
@@ -259,6 +273,7 @@ spu_cc_test(
     deps = [
         ":cryptomoe_combine",
         ":cryptomoe_dispatch",
+        ":cryptomoe_router",
         "//libspu/kernel:test_util",
         "//libspu/mpc/utils:simulate",
     ],
@@ -395,6 +410,19 @@ spu_cc_test(
     ],
 )
 
+
+spu_cc_test(
+    name = "cryptomoe_router_test",
+    srcs = ["cryptomoe_router_test.cc"],
+    deps = [
+        ":cryptomoe_router",
+        "//libspu/core:context",
+        "//libspu/kernel/hal:prot_wrapper",
+        "//libspu/kernel/hal:public_helper",
+        "//libspu/kernel:test_util",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
 
 spu_cc_test(
     name = "cryptomoe_dispatch_test",

@@ -14,13 +14,13 @@
 
 #include "libspu/kernel/hlo/cryptomoe_combine.h"
 #include "libspu/kernel/hlo/cryptomoe_dispatch.h"
+#include "libspu/kernel/hlo/cryptomoe_router.h"
 
 #include <cstdint>
 #include <vector>
 
 #include "gtest/gtest.h"
 #include "xtensor/xarray.hpp"
-#include "xtensor/xmath.hpp"
 
 #include "libspu/core/context.h"
 #include "libspu/kernel/hal/prot_wrapper.h"
@@ -32,43 +32,66 @@ namespace spu::kernel::hlo {
 namespace {
 
 void RunCryptoMoEEndToEndTest(FieldType field) {
-  // CryptoMoE Figure 4 routing:
+  // End-to-end secure CryptoMoE routing path:
   //
-  // K = [[0, 2],
-  //      [1, 2]]
+  //   Gate Routing -> Dispatch -> identity experts -> Combine
   //
-  // W = [[0.7, 0.2],
-  //      [0.2, 0.6]]
-  //
-  // Use identity experts, so y_Ei = X_i. Algorithm 2 should therefore return
-  // token A weighted by 0.7 and token B weighted by 0.2 + 0.6.
-  const xt::xarray<int32_t> routing_indices = {
-      {0, 2},
-      {1, 2},
-  };
-  const xt::xarray<float> routing_weights = {
-      {0.7F, 0.2F},
-      {0.2F, 0.6F},
-  };
+  // Gate Routing computes secret [[W]] and [[K]] from the secret token
+  // embeddings and secret router weights. Identity experts keep this test
+  // focused on the routing, dispatch, and combine protocols.
   const xt::xarray<float> token_embeddings = {
-      {10.0F, 20.0F},
-      {30.0F, 40.0F},
+      {1.0F, 0.0F},
+      {0.0F, 1.0F},
+  };
+
+  // Secret gate linear-layer weights [d=2, n=4].
+  //
+  // Linear(tokens) =
+  //   [[ 4,  1, -2, -3],
+  //    [-3, -2,  5,  2]]
+  //
+  // Hence top-2 routing is:
+  //   token 0 -> experts {0, 1}
+  //   token 1 -> experts {2, 3}
+  const xt::xarray<float> router_weight = {
+      {4.0F, 1.0F, -2.0F, -3.0F},
+      {-3.0F, -2.0F, 5.0F, 2.0F},
   };
 
   constexpr int64_t num_experts = 4;
+  constexpr int64_t top_k = 2;
   constexpr int64_t capacity = 1;
 
   mpc::utils::simulate(
       2, [&](const std::shared_ptr<yacl::link::Context>& lctx) {
-        SPUContext ctx =
-            test::makeSPUContext(ProtocolKind::CHEETAH, field, lctx);
+        RuntimeConfig config;
+        config.set_protocol(ProtocolKind::CHEETAH);
+        config.set_field(field);
+        config.set_fxp_fraction_bits(field == FieldType::FM32 ? 10 : 16);
+        config.set_fxp_exp_iters(5);
+        config.mutable_cheetah_2pc_config()->set_enable_mul_lsb_error(true);
+        config.mutable_cheetah_2pc_config()->set_approx_less_precision(4);
 
-        auto routing_indices_s =
-            test::makeValue(&ctx, routing_indices, VIS_SECRET);
-        auto routing_weights_s =
-            test::makeValue(&ctx, routing_weights, VIS_SECRET);
+        SPUContext ctx = test::makeSPUContext(config, lctx);
+
         auto tokens_s =
             test::makeValue(&ctx, token_embeddings, VIS_SECRET);
+        auto router_weight_s =
+            test::makeValue(&ctx, router_weight, VIS_SECRET);
+
+        ASSERT_TRUE(tokens_s.isSecret());
+        ASSERT_TRUE(router_weight_s.isSecret());
+
+        // Gate Routing: [[W]], [[K]] =
+        // TopK(Softmax(Linear([[x]])), k).
+        auto routing =
+            CryptoMoERoute(&ctx, tokens_s, router_weight_s, top_k);
+
+        ASSERT_TRUE(routing.weights.isSecret());
+        ASSERT_TRUE(routing.indices.isSecret());
+
+        auto routing_indices_s = routing.indices;
+        auto routing_weights_s = routing.weights;
 
         std::vector<spu::Value> expert_outputs_s;
         std::vector<spu::Value> onehots_s;
@@ -98,10 +121,13 @@ void RunCryptoMoEEndToEndTest(FieldType field) {
         auto got = hal::dump_public_as<float>(&ctx, output_p);
 
         const xt::xarray<float> expected = {
-            {7.0F, 14.0F},
-            {24.0F, 32.0F},
+            {0.9967806F, 0.0F},
+            {0.0F, 0.9988132F},
         };
-        EXPECT_TRUE(xt::allclose(expected, got, 0.01, 0.001));
+        EXPECT_NEAR(got(0, 0), expected(0, 0), 0.01);
+        EXPECT_NEAR(got(0, 1), expected(0, 1), 0.01);
+        EXPECT_NEAR(got(1, 0), expected(1, 0), 0.01);
+        EXPECT_NEAR(got(1, 1), expected(1, 1), 0.01);
       });
 }
 
