@@ -24,11 +24,10 @@
 
 namespace spu::kernel::hlo {
 
-spu::Value CryptoMoEDispatch(SPUContext* ctx,
-                             const spu::Value& routing_indices,
-                             const spu::Value& routing_weights,
-                             const spu::Value& tokens, int64_t expert_id,
-                             int64_t capacity) {
+CryptoMoEDispatchResult CryptoMoEDispatchWithAux(
+    SPUContext* ctx, const spu::Value& routing_indices,
+    const spu::Value& routing_weights, const spu::Value& tokens,
+    int64_t expert_id, int64_t capacity) {
   SPU_ENFORCE(routing_indices.isSecret(),
               "routing_indices must be secret");
   SPU_ENFORCE(routing_weights.isSecret(),
@@ -100,6 +99,7 @@ spu::Value CryptoMoEDispatch(SPUContext* ctx,
   auto topk_out = TopK(ctx, scores, capacity);
   SPU_ENFORCE(topk_out.size() == 2,
               "CryptoMoE dispatch requires TopK indices");
+  auto selected_scores = topk_out[0];
   auto selected_indices = topk_out[1];
 
   // Algorithm 1, line 6:
@@ -132,7 +132,23 @@ spu::Value CryptoMoEDispatch(SPUContext* ctx,
   // Pi_equal yields Boolean shares. Convert the one-hot matrix to arithmetic
   // sharing before invoking Cheetah's secret-secret MatMul.
   auto onehot_a = hal::_prefer_a(ctx, onehot);
-  return hal::matmul(ctx, onehot_a, tokens);
+  auto dispatched = hal::matmul(ctx, onehot_a, tokens);
+
+  return {
+    dispatched,
+    onehot,
+    selected_scores,
+};
+}
+
+spu::Value CryptoMoEDispatch(SPUContext* ctx,
+                             const spu::Value& routing_indices,
+                             const spu::Value& routing_weights,
+                             const spu::Value& tokens, int64_t expert_id,
+                             int64_t capacity) {
+  return CryptoMoEDispatchWithAux(ctx, routing_indices, routing_weights, tokens,
+                                  expert_id, capacity)
+      .tokens;
 }
 
 std::vector<spu::Value> CryptoMoEDispatchAll(

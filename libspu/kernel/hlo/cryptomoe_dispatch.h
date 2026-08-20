@@ -22,6 +22,17 @@
 
 namespace spu::kernel::hlo {
 
+struct CryptoMoEDispatchResult {
+  // X_i = O_i * x
+  spu::Value tokens;
+
+  // O_i, shape [capacity, num_tokens]
+  spu::Value onehot;
+
+  // S'_i, selected routing scores, shape [capacity]
+  spu::Value scores;
+};
+
 // CryptoMoE Algorithm 1: dispatch tokens to one expert.
 //
 // routing_indices and routing_weights have shape [m, k], where m is the
@@ -29,8 +40,13 @@ namespace spu::kernel::hlo {
 // tokens has shape [m, d].
 //
 // The function performs Algorithm 1 lines 2-8 for public expert_id and
-// capacity t, and returns the secret dispatched token matrix X_i with
-// shape [t, d].
+// capacity t, and returns the dispatched tokens X_i together with O_i and
+// S'_i required by Pi_combine.
+CryptoMoEDispatchResult CryptoMoEDispatchWithAux(
+    SPUContext* ctx, const spu::Value& routing_indices,
+    const spu::Value& routing_weights, const spu::Value& tokens,
+    int64_t expert_id, int64_t capacity);
+
 spu::Value CryptoMoEDispatch(SPUContext* ctx,
                              const spu::Value& routing_indices,
                              const spu::Value& routing_weights,

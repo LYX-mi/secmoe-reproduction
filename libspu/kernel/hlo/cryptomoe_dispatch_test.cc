@@ -83,14 +83,43 @@ void RunCryptoMoEDispatchTest(FieldType field) {
         ASSERT_TRUE(tokens_s.isSecret());
 
         // CryptoMoE Algorithm 1, lines 2-8.
-        // No intermediate value is revealed inside CryptoMoEDispatch.
-        auto dispatched_tokens_s =
-            CryptoMoEDispatch(&ctx, routing_indices_s, routing_weights_s,
-                              tokens_s, expert_id, capacity);
+        // Preserve the dispatch auxiliary state required by Pi_combine.
+        auto dispatch_result =
+            CryptoMoEDispatchWithAux(&ctx, routing_indices_s,
+                                     routing_weights_s, tokens_s, expert_id,
+                                     capacity);
+
+        auto dispatched_tokens_s = dispatch_result.tokens;
 
         ASSERT_TRUE(dispatched_tokens_s.isSecret());
         ASSERT_EQ(dispatched_tokens_s.dtype(), DT_F32);
         ASSERT_EQ(dispatched_tokens_s.shape(), Shape({capacity, 2}));
+
+        ASSERT_TRUE(dispatch_result.onehot.isSecret());
+        ASSERT_EQ(dispatch_result.onehot.dtype(), DT_I1);
+        ASSERT_EQ(dispatch_result.onehot.shape(), Shape({capacity, 2}));
+
+        auto onehot_p =
+            hal::_s2p(&ctx, dispatch_result.onehot).setDtype(DT_I1);
+        auto got_onehot = hal::dump_public_as<bool>(&ctx, onehot_p);
+
+        EXPECT_FALSE(got_onehot(0, 0));
+        EXPECT_TRUE(got_onehot(0, 1));
+
+        ASSERT_TRUE(dispatch_result.scores.isSecret());
+        ASSERT_EQ(dispatch_result.scores.dtype(), DT_F32);
+        ASSERT_EQ(dispatch_result.scores.shape(), Shape({capacity}));
+
+        auto scores_p =
+            hal::_s2p(&ctx, dispatch_result.scores).setDtype(DT_F32);
+        auto got_scores = hal::dump_public_as<float>(&ctx, scores_p);
+
+        auto routing_weights_oracle_p =
+            test::makeValue(&ctx, routing_weights, VIS_PUBLIC);
+        auto quantized_routing_weights =
+            hal::dump_public_as<float>(&ctx, routing_weights_oracle_p);
+
+        EXPECT_FLOAT_EQ(got_scores(0), quantized_routing_weights(1, 1));
 
         // No intermediate value above is revealed.
         // Reveal only final X_i for the correctness oracle.
