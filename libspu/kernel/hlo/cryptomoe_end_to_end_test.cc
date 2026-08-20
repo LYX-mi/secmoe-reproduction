@@ -14,6 +14,7 @@
 
 #include "libspu/kernel/hlo/cryptomoe_combine.h"
 #include "libspu/kernel/hlo/cryptomoe_dispatch.h"
+#include "libspu/kernel/hlo/cryptomoe_expert.h"
 #include "libspu/kernel/hlo/cryptomoe_router.h"
 
 #include <cstdint>
@@ -23,6 +24,7 @@
 #include "xtensor/xarray.hpp"
 
 #include "libspu/core/context.h"
+#include "libspu/kernel/hal/constants.h"
 #include "libspu/kernel/hal/prot_wrapper.h"
 #include "libspu/kernel/hal/public_helper.h"
 #include "libspu/kernel/test_util.h"
@@ -32,13 +34,17 @@ namespace spu::kernel::hlo {
 namespace {
 
 void RunCryptoMoEEndToEndTest(FieldType field) {
-  // End-to-end secure CryptoMoE routing path:
+  if (field == FieldType::FM32) {
+    GTEST_SKIP() << "upstream f_seg4_silu does not support FM32";
+  }
+
+  // End-to-end secure CryptoMoE layer:
   //
-  //   Gate Routing -> Dispatch -> identity experts -> Combine
+  //   Gate Routing -> Dispatch -> SwiGLU Expert Compute -> Combine
   //
   // Gate Routing computes secret [[W]] and [[K]] from the secret token
-  // embeddings and secret router weights. Identity experts keep this test
-  // focused on the routing, dispatch, and combine protocols.
+  // embeddings and secret router weights. Dispatched tokens are evaluated by
+  // batched SwiGLU experts with server-private model weights before Combine.
   const xt::xarray<float> token_embeddings = {
       {1.0F, 0.0F},
       {0.0F, 1.0F},
@@ -62,6 +68,16 @@ void RunCryptoMoEEndToEndTest(FieldType field) {
   constexpr int64_t top_k = 2;
   constexpr int64_t capacity = 1;
 
+  // Four server-private SwiGLU experts. Use identity projections so the
+  // nonlinear expert path remains easy to verify:
+  //   y = SiLU(x) * x.
+  const xt::xarray<float> expert_weight = {
+      {{1.0F, 0.0F}, {0.0F, 1.0F}},
+      {{1.0F, 0.0F}, {0.0F, 1.0F}},
+      {{1.0F, 0.0F}, {0.0F, 1.0F}},
+      {{1.0F, 0.0F}, {0.0F, 1.0F}},
+  };
+
   mpc::utils::simulate(
       2, [&](const std::shared_ptr<yacl::link::Context>& lctx) {
         RuntimeConfig config;
@@ -69,6 +85,7 @@ void RunCryptoMoEEndToEndTest(FieldType field) {
         config.set_field(field);
         config.set_fxp_fraction_bits(field == FieldType::FM32 ? 10 : 16);
         config.set_fxp_exp_iters(5);
+        config.set_experimental_enable_bmm(true);
         config.mutable_cheetah_2pc_config()->set_enable_mul_lsb_error(true);
         config.mutable_cheetah_2pc_config()->set_approx_less_precision(4);
 
@@ -93,9 +110,11 @@ void RunCryptoMoEEndToEndTest(FieldType field) {
         auto routing_indices_s = routing.indices;
         auto routing_weights_s = routing.weights;
 
+        std::vector<spu::Value> expert_inputs_s;
         std::vector<spu::Value> expert_outputs_s;
         std::vector<spu::Value> onehots_s;
         std::vector<spu::Value> scores_s;
+        expert_inputs_s.reserve(num_experts);
         expert_outputs_s.reserve(num_experts);
         onehots_s.reserve(num_experts);
         scores_s.reserve(num_experts);
@@ -105,10 +124,29 @@ void RunCryptoMoEEndToEndTest(FieldType field) {
               CryptoMoEDispatchWithAux(&ctx, routing_indices_s,
                                          routing_weights_s, tokens_s, expert,
                                          capacity);
-          expert_outputs_s.push_back(dispatch.tokens);
+          expert_inputs_s.push_back(dispatch.tokens);
           onehots_s.push_back(dispatch.onehot);
           scores_s.push_back(dispatch.scores);
         }
+
+        // Server-private expert parameters owned by rank 1.
+        auto gate_weight_p = hal::constant(&ctx, expert_weight, DT_F32);
+        auto up_weight_p = hal::constant(&ctx, expert_weight, DT_F32);
+        auto down_weight_p = hal::constant(&ctx, expert_weight, DT_F32);
+
+        auto gate_weight_v =
+            hal::_p2v(&ctx, gate_weight_p, 1).setDtype(DT_F32);
+        auto up_weight_v =
+            hal::_p2v(&ctx, up_weight_p, 1).setDtype(DT_F32);
+        auto down_weight_v =
+            hal::_p2v(&ctx, down_weight_p, 1).setDtype(DT_F32);
+
+        ASSERT_TRUE(gate_weight_v.isPrivate());
+        ASSERT_TRUE(up_weight_v.isPrivate());
+        ASSERT_TRUE(down_weight_v.isPrivate());
+
+        expert_outputs_s = CryptoMoEExpertCompute(
+            &ctx, expert_inputs_s, gate_weight_v, up_weight_v, down_weight_v);
 
         auto output_s =
             CryptoMoECombine(&ctx, expert_outputs_s, onehots_s, scores_s);
@@ -121,8 +159,8 @@ void RunCryptoMoEEndToEndTest(FieldType field) {
         auto got = hal::dump_public_as<float>(&ctx, output_p);
 
         const xt::xarray<float> expected = {
-            {0.9967806F, 0.0F},
-            {0.0F, 0.9988132F},
+            {0.7287050F, 0.0F},
+            {0.0F, 0.7301910F},
         };
         EXPECT_NEAR(got(0, 0), expected(0, 0), 0.01);
         EXPECT_NEAR(got(0, 1), expected(0, 1), 0.01);
