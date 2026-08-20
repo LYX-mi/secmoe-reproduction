@@ -233,6 +233,38 @@ spu_cc_library(
 )
 
 spu_cc_library(
+    name = "cryptomoe_combine",
+    srcs = ["cryptomoe_combine.cc"],
+    hdrs = ["cryptomoe_combine.h"],
+    deps = [
+        "//libspu/core:context",
+        "//libspu/kernel/hal:polymorphic",
+        "//libspu/kernel/hal:shape_ops",
+    ],
+)
+
+spu_cc_test(
+    name = "cryptomoe_combine_test",
+    srcs = ["cryptomoe_combine_test.cc"],
+    deps = [
+        ":cryptomoe_combine",
+        "//libspu/kernel:test_util",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
+
+spu_cc_test(
+    name = "cryptomoe_end_to_end_test",
+    srcs = ["cryptomoe_end_to_end_test.cc"],
+    deps = [
+        ":cryptomoe_combine",
+        ":cryptomoe_dispatch",
+        "//libspu/kernel:test_util",
+        "//libspu/mpc/utils:simulate",
+    ],
+)
+
+spu_cc_library(
     name = "rank",
     srcs = ["rank.cc"],
     hdrs = ["rank.h"],
