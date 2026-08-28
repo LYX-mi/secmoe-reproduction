@@ -37,6 +37,7 @@
 #include "libspu/kernel/hal/prot_wrapper.h"
 #include "libspu/kernel/hal/shape_ops.h"
 #include "libspu/kernel/test_util.h"
+#include "libspu/mpc/cheetah/state.h"
 #include "libspu/mpc/utils/simulate.h"
 
 namespace {
@@ -55,6 +56,8 @@ struct BenchResult {
   uint64_t expert_bytes = 0;
   uint64_t combine_bytes = 0;
   uint64_t total_bytes = 0;
+  uint64_t galois_key_bytes = 0;
+  uint64_t online_bytes = 0;
 };
 
 llvm::cl::opt<std::string> cli_method(
@@ -253,6 +256,10 @@ BenchResult RunCryptoMoE(
   const auto total_begin = Clock::now();
   const uint64_t total_bytes_begin =
       lctx->GetStats()->sent_bytes.load();
+  const uint64_t galois_key_bytes_begin =
+      ctx.getState<spu::mpc::cheetah::CheetahBatchMatMulState>()
+          ->get()
+          ->GaloisKeyBytes();
 
   auto stage_begin = Clock::now();
   uint64_t stage_bytes_begin = lctx->GetStats()->sent_bytes.load();
@@ -324,6 +331,17 @@ BenchResult RunCryptoMoE(
   result.total_ms = ElapsedMs(total_begin, total_end);
   result.total_bytes = total_bytes_end - total_bytes_begin;
 
+  const uint64_t galois_key_bytes_end =
+      ctx.getState<spu::mpc::cheetah::CheetahBatchMatMulState>()
+          ->get()
+          ->GaloisKeyBytes();
+  result.galois_key_bytes =
+      galois_key_bytes_end - galois_key_bytes_begin;
+  SPU_ENFORCE(result.galois_key_bytes <= result.total_bytes,
+              "Galois-key communication exceeds total communication");
+  result.online_bytes =
+      result.total_bytes - result.galois_key_bytes;
+
   return result;
 }
 
@@ -371,6 +389,10 @@ BenchResult RunDense(
   const auto total_begin = Clock::now();
   const uint64_t total_bytes_begin =
       lctx->GetStats()->sent_bytes.load();
+  const uint64_t galois_key_bytes_begin =
+      ctx.getState<spu::mpc::cheetah::CheetahBatchMatMulState>()
+          ->get()
+          ->GaloisKeyBytes();
 
   auto stage_begin = Clock::now();
   uint64_t stage_bytes_begin = lctx->GetStats()->sent_bytes.load();
@@ -421,6 +443,17 @@ BenchResult RunDense(
 
   result.total_ms = ElapsedMs(total_begin, total_end);
   result.total_bytes = total_bytes_end - total_bytes_begin;
+
+  const uint64_t galois_key_bytes_end =
+      ctx.getState<spu::mpc::cheetah::CheetahBatchMatMulState>()
+          ->get()
+          ->GaloisKeyBytes();
+  result.galois_key_bytes =
+      galois_key_bytes_end - galois_key_bytes_begin;
+  SPU_ENFORCE(result.galois_key_bytes <= result.total_bytes,
+              "Galois-key communication exceeds total communication");
+  result.online_bytes =
+      result.total_bytes - result.galois_key_bytes;
 
   return result;
 }
@@ -512,6 +545,11 @@ int main(int argc, char** argv) {
         party_results[0].combine_bytes + party_results[1].combine_bytes;
     merged.total_bytes =
         party_results[0].total_bytes + party_results[1].total_bytes;
+    merged.galois_key_bytes =
+        party_results[0].galois_key_bytes +
+        party_results[1].galois_key_bytes;
+    merged.online_bytes =
+        party_results[0].online_bytes + party_results[1].online_bytes;
 
     constexpr double kMiB = 1024.0 * 1024.0;
 
@@ -528,6 +566,10 @@ int main(int argc, char** argv) {
               << "expert_comm_mib=" << merged.expert_bytes / kMiB << "\n"
               << "combine_comm_mib=" << merged.combine_bytes / kMiB << "\n"
               << "total_comm_mib=" << merged.total_bytes / kMiB << "\n"
+              << "galois_key_comm_mib="
+              << merged.galois_key_bytes / kMiB << "\n"
+              << "online_comm_mib="
+              << merged.online_bytes / kMiB << "\n"
               << "latency_ms_per_token=" << merged.total_ms / m << "\n"
               << "comm_mib_per_token="
               << (merged.total_bytes / kMiB) / m << "\n";

@@ -50,6 +50,7 @@ class BatchMatMul {
 
   size_t OLEBatchSize() const;
 
+  uint64_t GaloisKeyBytes() const;
 
  private:
   struct Impl;

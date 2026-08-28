@@ -128,6 +128,8 @@ struct BatchMatMul::Impl : public EnableCPRNG {
                           yacl::link::Context *conn, const Shape4D &dim4,
                           uint32_t msg_width_hint);
 
+  uint64_t GaloisKeyBytes() const { return galois_key_bytes_; }
+
  protected:
   // void LocalExpandSEALContexts(size_t target);
 
@@ -213,6 +215,7 @@ struct BatchMatMul::Impl : public EnableCPRNG {
   std::vector<std::shared_ptr<seal::PublicKey>> peer_pub_key_;
   std::vector<std::shared_ptr<seal::GaloisKeys>> peer_gal_key_;
   std::vector<int> galois_steps_;
+  uint64_t galois_key_bytes_ = 0;
 
   std::unordered_map<BatchMatMulOptions, ModulusSwitchHelper> ms_helpers_;
 
@@ -374,6 +377,7 @@ void BatchMatMul::Impl::InitGaloisKey(const Shape4D &dim4) {
       // keygen.create_galois_keys(gk);
       peer_gal_key_.push_back(std::make_shared<seal::GaloisKeys>(gk));
       auto gk_buf = EncodeSEALObject(gk);
+      galois_key_bytes_ += gk_buf.size();
       lctx_->Send(lctx_->NextRank(), gk_buf, "send galois key");
     }
   }
@@ -772,6 +776,11 @@ int BatchMatMul::Rank() const { return impl_->Rank(); }
 size_t BatchMatMul::OLEBatchSize() const {
   SPU_ENFORCE(impl_ != nullptr);
   return impl_->OLEBatchSize();
+}
+
+uint64_t BatchMatMul::GaloisKeyBytes() const {
+  SPU_ENFORCE(impl_ != nullptr);
+  return impl_->GaloisKeyBytes();
 }
 
 NdArrayRef BatchMatMul::BatchDotOLE(const NdArrayRef& inp,
