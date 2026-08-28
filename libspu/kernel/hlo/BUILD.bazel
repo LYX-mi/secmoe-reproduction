@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//bazel:spu.bzl", "spu_cc_library", "spu_cc_test")
+load("//bazel:spu.bzl", "spu_cc_binary", "spu_cc_library", "spu_cc_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -479,5 +479,24 @@ spu_cc_test(
         "//libspu/kernel/hal:public_helper",
         "//libspu/kernel:test_util",
         "//libspu/mpc/utils:simulate",
+    ],
+)
+
+spu_cc_binary(
+    name = "cryptomoe_runner",
+    srcs = ["cryptomoe_runner.cc"],
+    deps = [
+        ":cryptomoe_combine",
+        ":cryptomoe_dispatch",
+        ":cryptomoe_expert",
+        ":cryptomoe_router",
+        "//libspu/core:context",
+        "//libspu/kernel/hal:constants",
+        "//libspu/kernel/hal:polymorphic",
+        "//libspu/kernel/hal:prot_wrapper",
+        "//libspu/kernel/hal:shape_ops",
+        "//libspu/kernel:test_util",
+        "//libspu/mpc/utils:simulate",
+        "@llvm-project//llvm:Support",
     ],
 )

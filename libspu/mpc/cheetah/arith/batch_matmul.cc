@@ -212,6 +212,7 @@ struct BatchMatMul::Impl : public EnableCPRNG {
   // the public key received from the opposite party
   std::vector<std::shared_ptr<seal::PublicKey>> peer_pub_key_;
   std::vector<std::shared_ptr<seal::GaloisKeys>> peer_gal_key_;
+  std::vector<int> galois_steps_;
 
   std::unordered_map<BatchMatMulOptions, ModulusSwitchHelper> ms_helpers_;
 
@@ -329,11 +330,6 @@ void BatchMatMul::Impl::LazyExpandSEALContexts(const BatchMatMulOptions &options
 }
 
 void BatchMatMul::Impl::InitGaloisKey(const Shape4D &dim4) {
-  // check whether galois keys are already initialized
-  if (peer_gal_key_.size() == seal_cntxts_.size()) {
-    return;
-  }
-
   // compute basic parameters
   SIMDBatchMMProt::Meta meta;
   meta.batch = dim4[0];
@@ -355,6 +351,14 @@ void BatchMatMul::Impl::InitGaloisKey(const Shape4D &dim4) {
   for (uint64_t gs = 1; gs < giant_step; ++gs) {
     steps.push_back(gs * baby_step * step0);
   }
+
+  if (peer_gal_key_.size() == seal_cntxts_.size() &&
+      galois_steps_ == steps) {
+    return;
+  }
+
+  peer_gal_key_.clear();
+  galois_steps_ = steps;
 
   for (size_t idx = 0; idx < seal_cntxts_.size(); ++idx) {
     if (lctx_->NextRank() == 0) {  // server

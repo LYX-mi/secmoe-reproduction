@@ -92,3 +92,91 @@ TEST_P(BatchMatMulTest, Basic) {
 }
 
 }  // namespace spu::mpc::cheetah
+
+namespace spu::mpc::cheetah {
+
+TEST(BatchMatMulTestStandalone, SequentialDifferentShapes) {
+  constexpr size_t kWorldSize = 2;
+  const auto field = FieldType::FM64;
+
+  const Shape4D dim_gate{4, 4, 64, 128};
+  const Shape4D dim_down{4, 4, 128, 64};
+
+  std::vector<NdArrayRef> gate_mat(kWorldSize);
+  gate_mat[0] =
+      ring_rand(field, {dim_gate[0], dim_gate[1], dim_gate[2]});
+  gate_mat[1] =
+      ring_rand(field, {dim_gate[0], dim_gate[2], dim_gate[3]});
+
+  std::vector<NdArrayRef> down_mat(kWorldSize);
+  down_mat[0] =
+      ring_rand(field, {dim_down[0], dim_down[1], dim_down[2]});
+  down_mat[1] =
+      ring_rand(field, {dim_down[0], dim_down[2], dim_down[3]});
+
+  std::vector<NdArrayRef> gate_result(kWorldSize);
+  std::vector<NdArrayRef> down_result(kWorldSize);
+
+  utils::simulate(kWorldSize, [&](std::shared_ptr<yacl::link::Context> lctx) {
+    lctx->SetRecvTimeout(10 * 1000);
+
+    const int rank = lctx->Rank();
+    auto matmul = std::make_shared<BatchMatMul>(lctx, false);
+    matmul->LazyInitKeys(field);
+
+    gate_result[rank] =
+        matmul->BatchDotOLE(gate_mat[rank], lctx.get(), dim_gate, rank == 0);
+
+    down_result[rank] =
+        matmul->BatchDotOLE(down_mat[rank], lctx.get(), dim_down, rank == 0);
+  });
+
+  auto gate_computed = ring_add(gate_result[0], gate_result[1]);
+  auto down_computed = ring_add(down_result[0], down_result[1]);
+
+  auto compute_expected =
+      [&](const std::vector<NdArrayRef>& mat, const Shape4D& dim4) {
+        auto expected =
+            ring_zeros(field, {dim4[0], dim4[1], dim4[3]});
+        for (int64_t b = 0; b < dim4[0]; ++b) {
+          auto lhs =
+              mat[0]
+                  .slice({b, 0, 0}, {b + 1, dim4[1], dim4[2]}, {1, 1, 1})
+                  .reshape({dim4[1], dim4[2]});
+          auto rhs =
+              mat[1]
+                  .slice({b, 0, 0}, {b + 1, dim4[2], dim4[3]}, {1, 1, 1})
+                  .reshape({dim4[2], dim4[3]});
+          auto slice =
+              expected
+                  .slice({b, 0, 0}, {b + 1, dim4[1], dim4[3]}, {1, 1, 1})
+                  .reshape({dim4[1], dim4[3]});
+          ring_mmul_(slice, lhs, rhs);
+        }
+        return expected;
+      };
+
+  auto gate_expected = compute_expected(gate_mat, dim_gate);
+  auto down_expected = compute_expected(down_mat, dim_down);
+
+  EXPECT_EQ(gate_expected.numel(), gate_computed.numel());
+  EXPECT_EQ(down_expected.numel(), down_computed.numel());
+
+  DISPATCH_ALL_FIELDS(field, "_", [&]() {
+    auto ge = NdArrayView<ring2k_t>(gate_expected);
+    auto gc = NdArrayView<ring2k_t>(gate_computed);
+    for (int64_t idx = 0; idx < gate_expected.numel(); ++idx) {
+      SPU_ENFORCE(ge[idx] == gc[idx],
+                  "gate expected {}, got {}, at {}", ge[idx], gc[idx], idx);
+    }
+
+    auto de = NdArrayView<ring2k_t>(down_expected);
+    auto dc = NdArrayView<ring2k_t>(down_computed);
+    for (int64_t idx = 0; idx < down_expected.numel(); ++idx) {
+      SPU_ENFORCE(de[idx] == dc[idx],
+                  "down expected {}, got {}, at {}", de[idx], dc[idx], idx);
+    }
+  });
+}
+
+}  // namespace spu::mpc::cheetah
